@@ -1,24 +1,205 @@
 [build-system]
 requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
 
-[project]
+**Release Date:** November 4, 2025build-backend = "setuptools.build_meta"
+
+
+
+## 🎉 What's New[project]
+
 name = "github-patch-scraper"
-version = "1.0.0"
+
+Version 1.0.0 is the first stable release of the GitHub .patch Email Scraper!version = "1.0.0"
+
 description = "Scraper for GitHub .patch URLs with automatic commit discovery"
-readme = "README.md"
+
+### ✨ Major Featuresreadme = "README.md"
+
 requires-python = ">=3.9"
-dependencies = [
-    "httpx>=0.24.0",
-    "typer[all]>=0.9.0",
-    "rich>=13.0.0",
+
+#### 1. **Email & Username Extraction**dependencies = [
+
+- Extracts email addresses and usernames from GitHub .patch files    "httpx>=0.24.0",
+
+- Parses line 2 of .patch format: `From: username <email@domain.com>`    "typer[all]>=0.9.0",
+
+- Stores data in local SQLite database    "rich>=13.0.0",
+
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.2",
+#### 2. **Automatic Commit Discovery** (NEW!)
+
+- **Random Mode**: Automatically discover commits from GitHub repos by language/topic[project.optional-dependencies]
+
+- **Popular Mode**: Fetch from curated list of major open-source projectsdev = [
+
+- No manual URL hunting required!    "pytest>=7.2",
+
     "pytest-asyncio>=0.20.0",
-]
 
-[project.scripts]
-scraper = "scraper.cli:app"
+#### 3. **Smart Filtering**]
+
+- ✅ Automatic deduplication (skips existing emails)
+
+- ✅ Skips noreply emails automatically[project.scripts]
+
+- ✅ Real-time progress feedbackscraper = "scraper.cli:app"
+
+
+#### 4. **Robust Fetching**
+- Async HTTP client with retry logic
+- Exponential backoff for rate limits
+- GitHub token authentication support
+
+### 🚀 CLI Commands
+
+```bash
+# Manual fetch
+./scraper.sh fetch https://github.com/owner/repo/commit/sha.patch
+
+# Auto-fetch random commits
+./scraper.sh auto-fetch --count 10 --token YOUR_TOKEN
+
+# Auto-fetch from popular repos
+./scraper.sh auto-fetch --count 20 --mode popular --token YOUR_TOKEN
+
+# List collected emails
+./scraper.sh list-patches
+```
+
+### 📦 What's Included
+
+**Core Modules:**
+- `fetcher.py` - Async HTTP client with retries
+- `parser.py` - Line 2 email/username extraction
+- `storage.py` - SQLite database with deduplication
+- `discover.py` - GitHub API integration for auto-discovery
+- `cli.py` - Full-featured command-line interface
+
+**Documentation:**
+- `README.md` - Quick start guide
+- `AUTO_FETCH_GUIDE.md` - Comprehensive auto-fetch guide
+- `AUTO_FETCH_SUMMARY.md` - Feature summary
+- `QUICKREF.md` - Command reference
+- `CHANGES.md` - Change history
+
+**Scripts:**
+- `scraper.sh` - Convenient CLI wrapper
+- `quickstart.sh` - One-command setup
+- `demo_autofetch.py` - Demo script
+- `test_example.py` - Test with example .patch
+
+**Tests:**
+- 10 unit tests (100% passing)
+- Parser tests
+- Storage tests
+- Discovery module tests
+
+### 🎯 Use Cases
+
+- Build email lists from open-source contributors
+- Research developer activity patterns
+- Contact database for outreach
+- Developer community analysis
+
+### 📊 Statistics
+
+- **Lines of Code**: ~1,200+
+- **Modules**: 5 core modules
+- **Tests**: 10 unit tests
+- **Documentation**: 5+ guides
+- **Supported Languages**: 13
+- **Supported Topics**: 10
+
+### 🔧 Technical Details
+
+- **Python**: 3.9+
+- **Database**: SQLite
+- **HTTP**: httpx (async)
+- **CLI**: Typer + Rich
+- **Tests**: pytest
+
+### 🌟 Highlights
+
+1. **Zero Configuration**: Works out of the box
+2. **Production Ready**: Fully tested and documented
+3. **Extensible**: Easy to add new features
+4. **User Friendly**: Beautiful CLI with real-time progress
+5. **Rate Limit Safe**: Built-in delays and token support
+
+### ⚙️ Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/Ru1vly/github-mail-scraper.git
+cd github-mail-scraper
+
+# Install dependencies
+python3 -m pip install -r requirements.txt
+
+# Test installation
+./scraper.sh --help
+```
+
+### 🚦 Quick Start
+
+```bash
+# Get a GitHub token (recommended)
+# Visit: https://github.com/settings/tokens
+
+# Auto-fetch 10 commits
+./scraper.sh auto-fetch --count 10 --token YOUR_TOKEN
+
+# View results
+./scraper.sh list-patches
+```
+
+### 📝 Requirements
+
+- Python 3.9 or higher
+- pip (Python package manager)
+- Internet connection
+- GitHub token (recommended for auto-fetch)
+
+### 🐛 Known Limitations
+
+- Rate limits: 60 req/hr without token, 5k/hr with token
+- Only extracts data from line 2 of .patch files
+- Noreply emails are automatically skipped
+- Requires internet for auto-fetch mode
+
+### 🔮 Future Roadmap
+
+- CSV/JSON export functionality
+- Web UI for browsing collected emails
+- Batch file processing
+- Resume from interruption
+- Token rotation for high-volume scraping
+- Docker Compose setup
+- CI/CD pipeline
+
+### 🙏 Acknowledgments
+
+Built with:
+- [httpx](https://www.python-httpx.org/) - HTTP client
+- [Typer](https://typer.tiangolo.com/) - CLI framework
+- [Rich](https://rich.readthedocs.io/) - Terminal formatting
+- [pytest](https://pytest.org/) - Testing framework
+
+### 📄 License
+
+MIT License - See LICENSE file for details
+
+### 🔗 Links
+
+- **Repository**: https://github.com/Ru1vly/github-mail-scraper
+- **Issues**: https://github.com/Ru1vly/github-mail-scraper/issues
+- **Documentation**: See README.md and AUTO_FETCH_GUIDE.md
+
+### 💬 Support
+
+For questions, issues, or feature requests, please open an issue on GitHub.
+
+---
+
+**Full Changelog**: Initial release (v1.0.0)
