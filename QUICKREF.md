@@ -7,10 +7,19 @@ python3 -m pip install -r requirements.txt
 
 ## Usage
 ```bash
-# Fetch a .patch URL
+# Fetch a specific .patch URL
 ./scraper.sh fetch https://github.com/owner/repo/pull/123.patch
 
-# With token
+# Auto-fetch random commits (NEW!)
+./scraper.sh auto-fetch --count 10 --token YOUR_TOKEN
+
+# Auto-fetch from popular repos
+./scraper.sh auto-fetch --count 20 --mode popular --token YOUR_TOKEN
+
+# Auto-fetch with filters
+./scraper.sh auto-fetch --count 15 --language python --topic web --token YOUR_TOKEN
+
+# With token (manual fetch)
 ./scraper.sh fetch URL --token YOUR_TOKEN
 
 # List collected emails
@@ -18,6 +27,7 @@ python3 -m pip install -r requirements.txt
 
 # Show help
 ./scraper.sh --help
+./scraper.sh auto-fetch --help
 ```
 
 ## Test
