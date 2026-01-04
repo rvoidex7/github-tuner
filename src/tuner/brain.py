@@ -48,23 +48,42 @@ class LocalBrain:
         return float(np.dot(vec1, vec2) / (norm1 * norm2))
 
     def calculate_user_vector(self, starred_descriptions: List[str]) -> np.ndarray:
+        """Deprecated: Use generate_interest_clusters instead."""
+        clusters = self.generate_interest_clusters(starred_descriptions, k=1)
+        return clusters[0] if len(clusters) > 0 else np.zeros(384)
+
+    def generate_interest_clusters(self, descriptions: List[str], k: int = 5) -> List[np.ndarray]:
         """
-        Convert each description to a vector.
-        Calculate the Mean Vector (average) of all starred repos.
+        Generate K clusters from the descriptions using KMeans.
+        Returns a list of cluster center vectors.
         """
-        if not starred_descriptions:
-            return np.zeros(384) # Return zero vector if no descriptions
+        if not descriptions:
+            return []
 
         vectors = []
-        for desc in starred_descriptions:
+        for desc in descriptions:
             vectors.append(self.vectorize(desc))
 
         if not vectors:
-             return np.zeros(384)
+            return []
 
-        # Calculate mean vector
-        mean_vector = np.mean(vectors, axis=0)
-        return mean_vector
+        vectors_np = np.array(vectors)
+
+        # If fewer data points than k, use all points as centers
+        if len(vectors) <= k:
+            return [v for v in vectors_np]
+
+        try:
+            from sklearn.cluster import KMeans
+            kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+            kmeans.fit(vectors_np)
+            return list(kmeans.cluster_centers_)
+        except ImportError:
+            logger.warning("scikit-learn not installed. Falling back to simple mean.")
+            return [np.mean(vectors_np, axis=0)]
+        except Exception as e:
+             logger.error(f"Clustering failed: {e}. Falling back to simple mean.")
+             return [np.mean(vectors_np, axis=0)]
 
 class CloudBrain:
     def __init__(self, api_key: Optional[str] = None):

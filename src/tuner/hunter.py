@@ -67,9 +67,11 @@ class Hunter:
             resp = await self.client.get(url, headers=headers)
 
             if resp.status_code == 403:
-                logger.warning("Rate limited by GitHub API. Returning mock data if allowed.")
+                await self._handle_rate_limit(resp)
+                # Retry once? For now, just return empty to be safe
                 return []
 
+            await self._check_rate_limit(resp)
             resp.raise_for_status()
             data = resp.json()
 
@@ -87,6 +89,29 @@ class Hunter:
         except Exception as e:
             logger.error(f"GitHub search failed: {e}")
             return []
+
+    async def _check_rate_limit(self, resp: httpx.Response):
+        """Check Rate Limit headers and sleep if needed."""
+        try:
+            remaining = int(resp.headers.get("X-RateLimit-Remaining", 100))
+            reset_time = int(resp.headers.get("X-RateLimit-Reset", 0))
+
+            if remaining < 10:
+                wait_seconds = max(0, reset_time - int(asyncio.get_running_loop().time()))
+                # Note: reset_time is epoch, so we need time.time(), but asyncio sleep is seconds.
+                import time
+                wait_seconds = max(0, reset_time - int(time.time()) + 1)
+
+                logger.warning(f"Rate limit low ({remaining}). Sleeping for {wait_seconds} seconds...")
+                await asyncio.sleep(wait_seconds)
+                logger.info("Resuming from rate limit sleep.")
+        except Exception as e:
+            logger.warning(f"Error checking rate limit: {e}")
+
+    async def _handle_rate_limit(self, resp: httpx.Response):
+        """Handle 403 Rate Limit Exceeded."""
+        logger.warning("Rate limited by GitHub API (403).")
+        await self._check_rate_limit(resp)
 
     async def _process_item(self, item: Dict[str, Any]) -> RawFinding:
         """Fetch readme and create RawFinding object."""

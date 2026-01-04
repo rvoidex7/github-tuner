@@ -4,7 +4,7 @@ import sys
 import os
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -46,13 +46,13 @@ async def _init_profile():
             console.print("[yellow]No starred repos found or token missing. Skipping profile generation.[/yellow]")
             return
 
-        with console.status("Analyzing and vectorizing...") as status:
-            user_vector = local_brain.calculate_user_vector(descriptions)
+        with console.status("Clustering interests...") as status:
+            clusters = local_brain.generate_interest_clusters(descriptions, k=5)
 
-        # Save vector
+        # Save clusters (list of vectors)
         os.makedirs(os.path.dirname(USER_PROFILE_PATH), exist_ok=True)
-        np.save(USER_PROFILE_PATH, user_vector)
-        console.print(f"[green]Analyzed {len(descriptions)} starred repos. Your interest profile is updated.[/green]")
+        np.save(USER_PROFILE_PATH, np.array(clusters))
+        console.print(f"[green]Analyzed {len(descriptions)} starred repos. Identified {len(clusters)} interest clusters.[/green]")
 
     finally:
         await hunter.close()
@@ -69,19 +69,29 @@ async def _run_tuning_loop(iterations: int, min_score: float):
     console.print(Panel.fit("[bold blue]GitHub Tuner[/bold blue] 🚀 Starting discovery engine..."))
 
     storage = TunerStorage(DB_PATH)
+    await storage.initialize() # Ensure DB is ready
+
     hunter = Hunter(STRATEGY_PATH)
     local_brain = LocalBrain()
     cloud_brain = CloudBrain()
 
     # Load user interests for screener
+    interest_clusters = []
     if os.path.exists(USER_PROFILE_PATH):
         console.print("[green]Loading user interest profile...[/green]")
-        interest_vector = np.load(USER_PROFILE_PATH)
-    else:
+        try:
+            interest_clusters = np.load(USER_PROFILE_PATH)
+            # Ensure it's 2D array (k, dim)
+            if len(interest_clusters.shape) == 1:
+                interest_clusters = interest_clusters.reshape(1, -1)
+        except Exception:
+            console.print("[red]Failed to load profile. Re-run init.[/red]")
+
+    if len(interest_clusters) == 0:
         console.print("[yellow]No user profile found. Using strategy keywords...[/yellow]")
         strategy = hunter._load_strategy()
         keywords = " ".join(strategy.get("keywords", []))
-        interest_vector = local_brain.vectorize(keywords)
+        interest_clusters = [local_brain.vectorize(keywords)]
 
     try:
         for i in range(iterations):
@@ -101,10 +111,18 @@ async def _run_tuning_loop(iterations: int, min_score: float):
             for finding in raw_findings:
                 # Screen
                 desc_vec = local_brain.vectorize(f"{finding.title} {finding.description}")
-                similarity = local_brain.calculate_similarity(interest_vector, desc_vec)
+
+                # Check against ALL clusters and take MAX similarity
+                max_similarity = 0.0
+                for cluster_vec in interest_clusters:
+                    sim = local_brain.calculate_similarity(cluster_vec, desc_vec)
+                    if sim > max_similarity:
+                        max_similarity = sim
+
+                similarity = max_similarity
 
                 # Save first to get ID, now passing embedding
-                f_id = storage.save_finding(
+                f_id = await storage.save_finding(
                     finding.title,
                     finding.url,
                     finding.description,
@@ -125,11 +143,11 @@ async def _run_tuning_loop(iterations: int, min_score: float):
                     with console.status(f"  Analyzing with CloudBrain...") as status:
                         summary, relevance = await cloud_brain.analyze_repo(finding.readme_content)
 
-                    storage.update_finding_analysis(f_id, summary, relevance)
+                    await storage.update_finding_analysis(f_id, summary, relevance)
                     count_analyzed += 1
                 else:
                     # Low score
-                    storage.update_finding_analysis(f_id, "Filtered by Screener", similarity)
+                    await storage.update_finding_analysis(f_id, "Filtered by Screener", similarity)
 
                 count_screened += 1
 
@@ -137,30 +155,38 @@ async def _run_tuning_loop(iterations: int, min_score: float):
 
     finally:
         await hunter.close()
+        await storage.close()
 
 @app.command()
 def list(
     limit: int = typer.Option(10, "--limit", "-n", help="Number of findings to show"),
 ):
     """List pending findings."""
+    asyncio.run(_list_findings(limit))
+
+async def _list_findings(limit: int):
     storage = TunerStorage(DB_PATH)
-    findings = storage.get_pending_findings()
+    await storage.initialize()
+    try:
+        findings = await storage.get_pending_findings()
 
-    table = Table(title=f"Top Pending Findings ({len(findings)} total)")
-    table.add_column("ID", justify="right", style="cyan", no_wrap=True)
-    table.add_column("Score", style="magenta")
-    table.add_column("Title", style="bold")
-    table.add_column("Summary")
+        table = Table(title=f"Top Pending Findings ({len(findings)} total)")
+        table.add_column("ID", justify="right", style="cyan", no_wrap=True)
+        table.add_column("Score", style="magenta")
+        table.add_column("Title", style="bold")
+        table.add_column("Summary")
 
-    for f in findings[:limit]:
-        table.add_row(
-            str(f["id"]),
-            f"{f['match_score']:.2f}" if f['match_score'] else "N/A",
-            f"[link={f['url']}]{f['title']}[/link]",
-            f["ai_summary"][:100] + "..." if f["ai_summary"] else ""
-        )
+        for f in findings[:limit]:
+            table.add_row(
+                str(f["id"]),
+                f"{f['match_score']:.2f}" if f['match_score'] else "N/A",
+                f"[link={f['url']}]{f['title']}[/link]",
+                f["ai_summary"][:100] + "..." if f["ai_summary"] else ""
+            )
 
-    console.print(table)
+        console.print(table)
+    finally:
+        await storage.close()
 
 @app.command()
 def vote(
@@ -173,49 +199,84 @@ def vote(
 
 async def _handle_vote(finding_id: int, vote: str, star_on_github: bool):
     storage = TunerStorage(DB_PATH)
+    await storage.initialize()
+    local_brain = LocalBrain()
 
-    action = "like" if vote.lower() in ["up", "like", "+1"] else "dislike"
-    status = "liked" if action == "like" else "disliked"
+    try:
+        action = "like" if vote.lower() in ["up", "like", "+1"] else "dislike"
+        status = "liked" if action == "like" else "disliked"
 
-    storage.update_finding_status(finding_id, status)
-    storage.log_feedback(finding_id, action)
+        await storage.update_finding_status(finding_id, status)
+        await storage.log_feedback(finding_id, action)
 
-    console.print(f"[green]Voted {action} on finding {finding_id}.[/green]")
+        console.print(f"[green]Voted {action} on finding {finding_id}.[/green]")
 
-    if action == "like" and star_on_github:
-        finding = storage.get_finding(finding_id)
-        if finding and finding.get("url"):
-            # Parse owner/repo from URL (https://github.com/owner/repo)
-            url = finding["url"]
+        # Dynamic Learning (Nudge)
+        if action == "like" and os.path.exists(USER_PROFILE_PATH):
             try:
-                # Remove .git suffix if present
-                if url.endswith(".git"):
-                    url = url[:-4]
+                finding = await storage.get_finding(finding_id)
+                if finding:
+                    # Reconstruct vector from title/desc (simplest way without decoding blob properly yet)
+                    # Ideally we store vector properly or decode blob
+                    desc_vec = local_brain.vectorize(f"{finding['title']} {finding['description']}")
 
-                parts = url.rstrip("/").split("/")
-                if len(parts) >= 2:
-                    repo = parts[-1]
-                    owner = parts[-2]
+                    clusters = np.load(USER_PROFILE_PATH)
+                    if len(clusters.shape) == 1: clusters = clusters.reshape(1, -1)
 
-                    # Basic validation of owner/repo names
-                    if not owner or not repo or "." in owner: # Simple heuristic check
-                         console.print(f"[red]Could not parse valid owner/repo from URL: {url}[/red]")
-                         return
+                    # Find closest cluster
+                    best_idx = -1
+                    max_sim = -1.0
+                    for i, c in enumerate(clusters):
+                        sim = local_brain.calculate_similarity(c, desc_vec)
+                        if sim > max_sim:
+                            max_sim = sim
+                            best_idx = i
 
-                    hunter = Hunter()
-                    try:
-                        if await hunter.star_repo(owner, repo):
-                             console.print(f"[green]Successfully starred {owner}/{repo} on GitHub![/green]")
-                        else:
-                             console.print(f"[red]Failed to star {owner}/{repo} on GitHub.[/red]")
-                    finally:
-                        await hunter.close()
-                else:
-                     console.print(f"[red]Invalid GitHub URL format: {url}[/red]")
+                    if best_idx != -1:
+                        # Nudge cluster center towards new repo (Learning Rate: 0.1)
+                        learning_rate = 0.1
+                        clusters[best_idx] = (1 - learning_rate) * clusters[best_idx] + learning_rate * desc_vec
+                        np.save(USER_PROFILE_PATH, clusters)
+                        console.print(f"[blue]🧠 Brain updated: Interest cluster {best_idx} adjusted.[/blue]")
             except Exception as e:
-                 console.print(f"[red]Error parsing URL {url}: {e}[/red]")
-        else:
-             console.print("[red]Could not determine repo URL for starring.[/red]")
+                console.print(f"[red]Failed to update brain: {e}[/red]")
+
+        if action == "like" and star_on_github:
+            finding = await storage.get_finding(finding_id)
+            if finding and finding.get("url"):
+                # Parse owner/repo from URL (https://github.com/owner/repo)
+                url = finding["url"]
+                try:
+                    # Remove .git suffix if present
+                    if url.endswith(".git"):
+                        url = url[:-4]
+
+                    parts = url.rstrip("/").split("/")
+                    if len(parts) >= 2:
+                        repo = parts[-1]
+                        owner = parts[-2]
+
+                        # Basic validation of owner/repo names
+                        if not owner or not repo or "." in owner: # Simple heuristic check
+                             console.print(f"[red]Could not parse valid owner/repo from URL: {url}[/red]")
+                             return
+
+                        hunter = Hunter()
+                        try:
+                            if await hunter.star_repo(owner, repo):
+                                 console.print(f"[green]Successfully starred {owner}/{repo} on GitHub![/green]")
+                            else:
+                                 console.print(f"[red]Failed to star {owner}/{repo} on GitHub.[/red]")
+                        finally:
+                            await hunter.close()
+                    else:
+                         console.print(f"[red]Invalid GitHub URL format: {url}[/red]")
+                except Exception as e:
+                     console.print(f"[red]Error parsing URL {url}: {e}[/red]")
+            else:
+                 console.print("[red]Could not determine repo URL for starring.[/red]")
+    finally:
+        await storage.close()
 
 @app.command()
 def optimize():
@@ -224,25 +285,29 @@ def optimize():
 
 async def _optimize_strategy():
     storage = TunerStorage(DB_PATH)
+    await storage.initialize()
     cloud_brain = CloudBrain()
 
-    feedback = storage.get_feedback_history()
-    if not feedback:
-        console.print("[yellow]No feedback history found. Vote on findings first![/yellow]")
-        return
+    try:
+        feedback = await storage.get_feedback_history()
+        if not feedback:
+            console.print("[yellow]No feedback history found. Vote on findings first![/yellow]")
+            return
 
-    with console.status("Generating new strategy...") as status:
-        new_strategy = await cloud_brain.generate_strategy(feedback)
+        with console.status("Generating new strategy...") as status:
+            new_strategy = await cloud_brain.generate_strategy(feedback)
 
-    if new_strategy:
-        storage.save_strategy(new_strategy)
-        # Update strategy.json
-        with open(STRATEGY_PATH, "w") as f:
-            json.dump(new_strategy, f, indent=4)
+        if new_strategy:
+            await storage.save_strategy(new_strategy)
+            # Update strategy.json
+            with open(STRATEGY_PATH, "w") as f:
+                json.dump(new_strategy, f, indent=4)
 
-        console.print(Panel(json.dumps(new_strategy, indent=2), title="New Strategy Applied"))
-    else:
-        console.print("[red]Failed to generate new strategy.[/red]")
+            console.print(Panel(json.dumps(new_strategy, indent=2), title="New Strategy Applied"))
+        else:
+            console.print("[red]Failed to generate new strategy.[/red]")
+    finally:
+        await storage.close()
 
 if __name__ == "__main__":
     app()
