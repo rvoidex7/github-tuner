@@ -17,12 +17,45 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from tuner.hunter import Hunter
 from tuner.brain import LocalBrain, CloudBrain
 from tuner.storage import TunerStorage
+import numpy as np
 
 app = typer.Typer(help="GitHub Tuner CLI")
 console = Console()
 
 DB_PATH = "data/tuner.db"
 STRATEGY_PATH = "strategy.json"
+USER_PROFILE_PATH = "data/user_profile.npy"
+
+@app.command()
+def init():
+    """Initialize user profile by analyzing starred repos."""
+    asyncio.run(_init_profile())
+
+async def _init_profile():
+    console.print(Panel.fit("[bold blue]GitHub Tuner[/bold blue] 🧬 Initializing User Profile..."))
+
+    hunter = Hunter(STRATEGY_PATH)
+    local_brain = LocalBrain()
+
+    try:
+        with console.status("Fetching starred repositories...") as status:
+            descriptions = await hunter.fetch_user_starred_repos(limit=100)
+            status.update(f"Fetched {len(descriptions)} starred repos.")
+
+        if not descriptions:
+            console.print("[yellow]No starred repos found or token missing. Skipping profile generation.[/yellow]")
+            return
+
+        with console.status("Analyzing and vectorizing...") as status:
+            user_vector = local_brain.calculate_user_vector(descriptions)
+
+        # Save vector
+        os.makedirs(os.path.dirname(USER_PROFILE_PATH), exist_ok=True)
+        np.save(USER_PROFILE_PATH, user_vector)
+        console.print(f"[green]Analyzed {len(descriptions)} starred repos. Your interest profile is updated.[/green]")
+
+    finally:
+        await hunter.close()
 
 @app.command()
 def start(
@@ -41,9 +74,14 @@ async def _run_tuning_loop(iterations: int, min_score: float):
     cloud_brain = CloudBrain()
 
     # Load user interests for screener
-    strategy = hunter._load_strategy()
-    keywords = " ".join(strategy.get("keywords", []))
-    interest_vector = local_brain.vectorize(keywords)
+    if os.path.exists(USER_PROFILE_PATH):
+        console.print("[green]Loading user interest profile...[/green]")
+        interest_vector = np.load(USER_PROFILE_PATH)
+    else:
+        console.print("[yellow]No user profile found. Using strategy keywords...[/yellow]")
+        strategy = hunter._load_strategy()
+        keywords = " ".join(strategy.get("keywords", []))
+        interest_vector = local_brain.vectorize(keywords)
 
     try:
         for i in range(iterations):
@@ -128,8 +166,12 @@ def list(
 def vote(
     finding_id: int = typer.Argument(..., help="ID of the finding"),
     vote: str = typer.Argument(..., help="'up' (like) or 'down' (dislike)"),
+    star_on_github: bool = typer.Option(False, "--star-on-github", help="Star the repo on GitHub if liked"),
 ):
     """Vote on a finding to train the agent."""
+    asyncio.run(_handle_vote(finding_id, vote, star_on_github))
+
+async def _handle_vote(finding_id: int, vote: str, star_on_github: bool):
     storage = TunerStorage(DB_PATH)
 
     action = "like" if vote.lower() in ["up", "like", "+1"] else "dislike"
@@ -139,6 +181,41 @@ def vote(
     storage.log_feedback(finding_id, action)
 
     console.print(f"[green]Voted {action} on finding {finding_id}.[/green]")
+
+    if action == "like" and star_on_github:
+        finding = storage.get_finding(finding_id)
+        if finding and finding.get("url"):
+            # Parse owner/repo from URL (https://github.com/owner/repo)
+            url = finding["url"]
+            try:
+                # Remove .git suffix if present
+                if url.endswith(".git"):
+                    url = url[:-4]
+
+                parts = url.rstrip("/").split("/")
+                if len(parts) >= 2:
+                    repo = parts[-1]
+                    owner = parts[-2]
+
+                    # Basic validation of owner/repo names
+                    if not owner or not repo or "." in owner: # Simple heuristic check
+                         console.print(f"[red]Could not parse valid owner/repo from URL: {url}[/red]")
+                         return
+
+                    hunter = Hunter()
+                    try:
+                        if await hunter.star_repo(owner, repo):
+                             console.print(f"[green]Successfully starred {owner}/{repo} on GitHub![/green]")
+                        else:
+                             console.print(f"[red]Failed to star {owner}/{repo} on GitHub.[/red]")
+                    finally:
+                        await hunter.close()
+                else:
+                     console.print(f"[red]Invalid GitHub URL format: {url}[/red]")
+            except Exception as e:
+                 console.print(f"[red]Error parsing URL {url}: {e}[/red]")
+        else:
+             console.print("[red]Could not determine repo URL for starring.[/red]")
 
 @app.command()
 def optimize():
