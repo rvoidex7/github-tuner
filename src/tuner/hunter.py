@@ -115,3 +115,81 @@ class Hunter:
                 continue
 
         return ""
+
+    async def fetch_user_starred_repos(self, limit: int = 100) -> List[str]:
+        """Fetches descriptions of repos starred by the authenticated user."""
+        token = os.getenv("GITHUB_TOKEN")
+        if not token:
+            logger.warning("No GITHUB_TOKEN found. Cannot fetch user stars.")
+            return []
+
+        headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+        url = "https://api.github.com/user/starred"
+
+        descriptions = []
+        page = 1
+
+        try:
+            while len(descriptions) < limit:
+                # Always fetch 100 per page to maintain consistent pagination offsets
+                params = {
+                    "per_page": 100,
+                    "sort": "created",
+                    "direction": "desc",
+                    "page": page
+                }
+
+                resp = await self.client.get(url, headers=headers, params=params)
+                resp.raise_for_status()
+                repos = resp.json()
+
+                if not repos:
+                    break
+
+                for repo in repos:
+                    if len(descriptions) >= limit:
+                        break
+
+                    desc = repo.get("description") or ""
+                    title = repo.get("full_name") or ""
+                    # Combine title and description for better context
+                    text = f"{title} {desc}".strip()
+                    if text:
+                        descriptions.append(text)
+
+                if len(repos) < 100:
+                    break
+
+                page += 1
+
+            return descriptions
+
+        except Exception as e:
+            logger.error(f"Failed to fetch user stars: {e}")
+            return descriptions
+
+    async def star_repo(self, owner: str, repo: str) -> bool:
+        """Stars a repo on GitHub via API (PUT /user/starred/{owner}/{repo})."""
+        token = os.getenv("GITHUB_TOKEN")
+        if not token:
+            logger.warning("No GITHUB_TOKEN found. Cannot star repo.")
+            return False
+
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3+json",
+            "Content-Length": "0"
+        }
+        url = f"https://api.github.com/user/starred/{owner}/{repo}"
+
+        try:
+            resp = await self.client.put(url, headers=headers)
+            if resp.status_code == 204:
+                logger.info(f"Successfully starred {owner}/{repo}")
+                return True
+            else:
+                logger.error(f"Failed to star {owner}/{repo}: {resp.status_code} {resp.text}")
+                return False
+        except Exception as e:
+            logger.error(f"Exception starring repo {owner}/{repo}: {e}")
+            return False

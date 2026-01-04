@@ -17,4 +17,4 @@ RUN mkdir -p /app/data
 RUN pytest -q
 
 # Default command
-CMD ["python", "-m", "scraper.cli", "--help"]
+CMD ["python", "-m", "tuner.cli", "start"]

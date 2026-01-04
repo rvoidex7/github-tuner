@@ -47,6 +47,25 @@ class LocalBrain:
 
         return float(np.dot(vec1, vec2) / (norm1 * norm2))
 
+    def calculate_user_vector(self, starred_descriptions: List[str]) -> np.ndarray:
+        """
+        Convert each description to a vector.
+        Calculate the Mean Vector (average) of all starred repos.
+        """
+        if not starred_descriptions:
+            return np.zeros(384) # Return zero vector if no descriptions
+
+        vectors = []
+        for desc in starred_descriptions:
+            vectors.append(self.vectorize(desc))
+
+        if not vectors:
+             return np.zeros(384)
+
+        # Calculate mean vector
+        mean_vector = np.mean(vectors, axis=0)
+        return mean_vector
+
 class CloudBrain:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
