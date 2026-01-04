@@ -18,6 +18,14 @@ def mock_sentence_transformer():
     with patch("sentence_transformers.SentenceTransformer") as mock:
         yield mock
 
+@pytest.fixture
+def mock_aiosqlite():
+    with patch("aiosqlite.connect") as mock:
+        mock_conn = AsyncMock()
+        mock.return_value = mock_conn
+        mock_conn.__aenter__.return_value = mock_conn
+        yield mock
+
 # Test Hunter
 
 @pytest.mark.asyncio
@@ -28,6 +36,7 @@ async def test_hunter_fetch_user_stars(mock_httpx_client):
         # Mocking the response
         mock_response = MagicMock()
         mock_response.status_code = 200
+        mock_response.headers = {} # No rate limit headers
         mock_response.json.return_value = [
             {"full_name": "owner/repo1", "description": "desc1"},
             {"full_name": "owner/repo2", "description": "desc2"},
@@ -62,41 +71,57 @@ async def test_hunter_star_repo(mock_httpx_client):
 
 # Test LocalBrain
 
-def test_local_brain_calculate_user_vector():
+def test_local_brain_clustering():
     brain = LocalBrain()
     # Mock vectorize to return predictable vectors
-    brain.vectorize = MagicMock(side_effect=[
-        np.array([1.0, 2.0]),
-        np.array([3.0, 4.0])
-    ])
+    # Create two groups of vectors
+    v1 = np.array([1.0, 0.0])
+    v2 = np.array([0.9, 0.1])
+    v3 = np.array([0.0, 1.0])
+    v4 = np.array([0.1, 0.9])
 
-    descriptions = ["d1", "d2"]
-    user_vector = brain.calculate_user_vector(descriptions)
+    brain.vectorize = MagicMock(side_effect=[v1, v2, v3, v4])
 
-    # Mean of [1, 2] and [3, 4] is [2, 3]
-    expected = np.array([2.0, 3.0])
-    np.testing.assert_array_equal(user_vector, expected)
+    descriptions = ["d1", "d2", "d3", "d4"]
+    # With k=2, we expect roughly two centers around [1,0] and [0,1]
+    clusters = brain.generate_interest_clusters(descriptions, k=2)
 
-def test_local_brain_calculate_user_vector_empty():
+    assert len(clusters) == 2
+    # Verify we got something vector-like
+    assert clusters[0].shape == (2,)
+
+def test_local_brain_clustering_fallback():
+    # If sklearn fails or few items
     brain = LocalBrain()
-    user_vector = brain.calculate_user_vector([])
-    assert user_vector.shape == (384,)
-    assert np.all(user_vector == 0)
+    brain.vectorize = MagicMock(return_value=np.zeros(384))
 
-# Test Storage
+    descriptions = ["d1"]
+    clusters = brain.generate_interest_clusters(descriptions, k=5)
 
-def test_storage_get_finding():
-    # Use in-memory DB for testing
+    # Should return all points if less than k
+    assert len(clusters) == 1
+
+# Test Storage (Async)
+
+@pytest.mark.asyncio
+async def test_storage_get_finding():
+    # Use in-memory DB for testing with real aiosqlite if installed,
+    # but since we might not want to depend on real DB in unit tests, we can use it if available or mock.
+    # The current TunerStorage handles :memory: correctly.
+
     storage = TunerStorage(":memory:")
+    await storage.initialize()
 
-    # Insert a finding manually
-    f_id = storage.save_finding("Test Title", "http://test.url", "Test Desc", 100, "Python")
-    assert f_id != -1
+    try:
+        f_id = await storage.save_finding("Test Title", "http://test.url", "Test Desc", 100, "Python")
+        assert f_id != -1
 
-    finding = storage.get_finding(f_id)
-    assert finding is not None
-    assert finding["title"] == "Test Title"
-    assert finding["url"] == "http://test.url"
+        finding = await storage.get_finding(f_id)
+        assert finding is not None
+        assert finding["title"] == "Test Title"
+        assert finding["url"] == "http://test.url"
 
-    finding = storage.get_finding(999)
-    assert finding is None
+        finding = await storage.get_finding(999)
+        assert finding is None
+    finally:
+        await storage.close()

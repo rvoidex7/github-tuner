@@ -6,4 +6,6 @@ pytest-asyncio>=0.20.0
 google-generativeai
 sentence-transformers
 numpy
+aiosqlite
+scikit-learn
 feedparser
