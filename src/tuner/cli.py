@@ -19,12 +19,52 @@ from tuner.brain import LocalBrain, CloudBrain
 from tuner.storage import TunerStorage
 import numpy as np
 
-app = typer.Typer(help="GitHub Tuner CLI")
+HELP_TEXT = """
+# GitHub Tuner 🧬
+
+**An Autonomous, Hybrid-AI Repository Discovery Agent.**
+
+This tool acts as your personal research assistant, finding and filtering GitHub repositories
+that match your specific interests. It uses a hybrid approach:
+
+*   **Hunter**: Scans GitHub for fresh repositories using dynamic strategies.
+*   **Screener**: Uses **Local AI** (Embeddings) to filter noise based on your clustered interest profile.
+*   **Analyst**: Uses **Cloud AI** (Gemini) to score and summarize the top candidates.
+*   **Manager**: Learns from your feedback (votes) to continuously improve search accuracy.
+
+**Getting Started:**
+1.  Run `init` to analyze your stars and create an interest profile.
+2.  Run `start` to begin the discovery loop.
+3.  Run `list` to see what was found.
+4.  Run `vote` to train the agent.
+"""
+
+app = typer.Typer(
+    help=HELP_TEXT,
+    rich_markup_mode="markdown",
+    context_settings={"help_option_names": ["-h", "--help"]}
+)
 console = Console()
 
 DB_PATH = "data/tuner.db"
 STRATEGY_PATH = "strategy.json"
 USER_PROFILE_PATH = "data/user_profile.npy"
+
+def version_callback(value: bool):
+    if value:
+        console.print("[bold blue]GitHub Tuner[/bold blue] v0.3.0 (Phase 3)")
+        raise typer.Exit()
+
+@app.callback()
+def main(
+    version: Optional[bool] = typer.Option(
+        None, "--version", "-v", help="Show the application version and exit.", callback=version_callback, is_eager=True
+    )
+):
+    """
+    GitHub Tuner: AI-powered repository discovery.
+    """
+    pass
 
 @app.command()
 def init():
