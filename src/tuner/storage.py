@@ -66,6 +66,20 @@ class TunerStorage:
                 FOREIGN KEY (finding_id) REFERENCES findings (id)
             )
         """)
+
+        # Tasks Queue table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id TEXT PRIMARY KEY,
+                type TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                priority INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'pending',
+                retry_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status_priority ON tasks (status, priority DESC)")
         await db.commit()
 
     def _get_conn_ctx(self):
@@ -168,3 +182,88 @@ class TunerStorage:
             """) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
+
+class TaskQueue:
+    def __init__(self, db_path: str = "data/tuner.db"):
+        self.storage = TunerStorage(db_path)
+
+    async def enqueue_task(self, task_type: str, payload: Dict[str, Any], priority: int = 0) -> str:
+        """Add a task to the queue."""
+        import uuid
+        task_id = str(uuid.uuid4())
+        payload_json = json.dumps(payload)
+
+        async with self.storage._get_conn_ctx() as db:
+            await db.execute("""
+                INSERT INTO tasks (id, type, payload, priority, status)
+                VALUES (?, ?, ?, ?, 'pending')
+            """, (task_id, task_type, payload_json, priority))
+            await db.commit()
+        return task_id
+
+    async def pop_task(self, worker_type: str = None) -> Optional[Dict[str, Any]]:
+        """
+        Get the next pending task atomically.
+        If worker_type is specified (e.g. 'search'), only pop tasks of that type.
+        """
+        async with self.storage._get_conn_ctx() as db:
+            db.row_factory = aiosqlite.Row
+
+            # Use immediate transaction to lock for update
+            await db.execute("BEGIN IMMEDIATE")
+
+            try:
+                query = "SELECT * FROM tasks WHERE status = 'pending'"
+
+                if worker_type:
+                    if worker_type == 'scout':
+                        query += " AND type = 'search'"
+                    elif worker_type == 'fetcher':
+                        query += " AND type = 'fetch_readme'"
+                    elif worker_type == 'processor':
+                        query += " AND type = 'analyze'"
+
+                query += " ORDER BY priority DESC, created_at ASC LIMIT 1"
+
+                async with db.execute(query) as cursor:
+                    task = await cursor.fetchone()
+
+                if task:
+                    task_dict = dict(task)
+                    # Mark as processing
+                    await db.execute("UPDATE tasks SET status = 'processing' WHERE id = ?", (task_dict['id'],))
+                    await db.commit()
+
+                    # Parse payload
+                    task_dict['payload'] = json.loads(task_dict['payload'])
+                    return task_dict
+
+                await db.commit()
+                return None
+            except Exception:
+                await db.rollback()
+                raise
+
+    async def complete_task(self, task_id: str):
+        """Mark task as completed."""
+        async with self.storage._get_conn_ctx() as db:
+            await db.execute("UPDATE tasks SET status = 'completed' WHERE id = ?", (task_id,))
+            await db.commit()
+
+    async def fail_task(self, task_id: str, error: str):
+        """Mark task as failed or retry."""
+        async with self.storage._get_conn_ctx() as db:
+            async with db.execute("SELECT retry_count FROM tasks WHERE id = ?", (task_id,)) as cursor:
+                row = await cursor.fetchone()
+                retries = row[0] if row else 0
+
+            if retries < 3:
+                await db.execute("""
+                    UPDATE tasks
+                    SET status = 'pending', retry_count = retry_count + 1
+                    WHERE id = ?
+                """, (task_id,))
+            else:
+                await db.execute("UPDATE tasks SET status = 'failed' WHERE id = ?", (task_id,))
+
+            await db.commit()
