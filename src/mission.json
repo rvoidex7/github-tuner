@@ -1,0 +1,9 @@
+{
+    "name": "General Exploration",
+    "goal": "Find interesting open source tools",
+    "languages": [
+        "Python"
+    ],
+    "min_stars": 50,
+    "context_path": null
+}

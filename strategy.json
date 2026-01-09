@@ -1,13 +1,18 @@
 {
-    "keywords": [
-        "machine learning",
-        "rust",
-        "productivity"
-    ],
-    "languages": [
-        "Python",
-        "Rust",
-        "TypeScript"
-    ],
-    "min_stars": 50
+  "keywords": [
+    "machine learning",
+    "autonomous agents"
+  ],
+  "languages": [
+    "Python"
+  ],
+  "min_stars": 50,
+  "exclude_patterns": [
+    "tutorial",
+    "course",
+    "demo"
+  ],
+  "date_range": "pushed:>2024-01-01",
+  "sort_by": "updated",
+  "execution_interval": 600
 }

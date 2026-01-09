@@ -5,6 +5,10 @@ import os
 import json
 from pathlib import Path
 from typing import Optional, List
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -12,12 +16,17 @@ from rich.panel import Panel
 from rich.markdown import Markdown
 
 # Add src to path for local imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tuner.hunter import Hunter
 from tuner.brain import LocalBrain, CloudBrain
 from tuner.storage import TunerStorage
+from tuner.tui import TunerDashboard, TuiLogHandler
+from tuner.manager import AutonomousManager
+from tuner.menu import main as menu_main
+from rich.live import Live
 import numpy as np
+import logging
 
 HELP_TEXT = """
 # GitHub Tuner 🧬
@@ -55,16 +64,24 @@ def version_callback(value: bool):
         console.print("[bold blue]GitHub Tuner[/bold blue] v0.3.0 (Phase 3)")
         raise typer.Exit()
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def main(
     version: Optional[bool] = typer.Option(
         None, "--version", "-v", help="Show the application version and exit.", callback=version_callback, is_eager=True
-    )
+    ),
+    ctx: typer.Context = None
 ):
     """
     GitHub Tuner: AI-powered repository discovery.
     """
-    pass
+    if ctx.invoked_subcommand is None:
+        menu_main()
+
+@app.command()
+def agent():
+    """Start the autonomous background agent (daemon mode)."""
+    manager = AutonomousManager()
+    asyncio.run(manager.start())
 
 @app.command()
 def init():
@@ -115,87 +132,135 @@ async def _run_tuning_loop(iterations: int, min_score: float):
     local_brain = LocalBrain()
     cloud_brain = CloudBrain()
 
-    # Load user interests for screener
-    interest_clusters = []
-    if os.path.exists(USER_PROFILE_PATH):
-        console.print("[green]Loading user interest profile...[/green]")
+    # Setup TUI
+    dashboard = TunerDashboard(console)
+    
+    # Configure Logging (File + TUI)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.FileHandler("tuner.log", mode='a', encoding='utf-8'),
+            TuiLogHandler(dashboard)
+        ]
+    )
+    
+    # Capture findings for post-TUI summary
+    session_findings = []
+
+    with Live(dashboard, refresh_per_second=4, screen=True) as live:
         try:
-            interest_clusters = np.load(USER_PROFILE_PATH)
-            # Ensure it's 2D array (k, dim)
-            if len(interest_clusters.shape) == 1:
-                interest_clusters = interest_clusters.reshape(1, -1)
-        except Exception:
-            console.print("[red]Failed to load profile. Re-run init.[/red]")
+            dashboard.update_status("Loading user profile...")
+            # Load user interests for screener
+            interest_clusters = []
+            if os.path.exists(USER_PROFILE_PATH):
+                try:
+                    interest_clusters = np.load(USER_PROFILE_PATH)
+                    if len(interest_clusters.shape) == 1:
+                        interest_clusters = interest_clusters.reshape(1, -1)
+                except Exception:
+                    dashboard.add_log("Failed to load profile. Re-run init.", logging.ERROR)
 
-    if len(interest_clusters) == 0:
-        console.print("[yellow]No user profile found. Using strategy keywords...[/yellow]")
-        strategy = hunter._load_strategy()
-        keywords = " ".join(strategy.get("keywords", []))
-        interest_clusters = [local_brain.vectorize(keywords)]
+            if len(interest_clusters) == 0:
+                dashboard.add_log("No user profile found. Using strategy keywords...", logging.WARNING)
+                strategy = hunter._load_strategy()
+                keywords = " ".join(strategy.get("keywords", []))
+                interest_clusters = [local_brain.vectorize(keywords)]
 
-    try:
-        for i in range(iterations):
-            console.print(f"\n[bold]Iteration {i+1}/{iterations}[/bold]")
-
-            # 1. Hunter
-            with console.status("Hunting for repositories...") as status:
+            for i in range(iterations):
+                dashboard.iteration_info = f"Iteration {i+1}/{iterations}"
+                
+                # 1. Hunter
+                dashboard.update_status("Hunting for repositories...")
                 raw_findings = await hunter.search_github()
-                status.update(f"Found {len(raw_findings)} raw candidates")
+                
+                dashboard.add_log(f"Found {len(raw_findings)} raw candidates", logging.INFO)
 
-            console.print(f"  Found {len(raw_findings)} candidates.")
+                count_screened = 0
+                count_analyzed = 0
 
-            count_screened = 0
-            count_analyzed = 0
+                # 2. Screener & 3. Analyst
+                dashboard.update_status("Screening & Analyzing...")
+                
+                for finding in raw_findings:
+                    # Screen
+                    desc_vec = local_brain.vectorize(f"{finding.title} {finding.description}")
 
-            # 2. Screener & 3. Analyst
-            for finding in raw_findings:
-                # Screen
-                desc_vec = local_brain.vectorize(f"{finding.title} {finding.description}")
+                    max_similarity = 0.0
+                    for cluster_vec in interest_clusters:
+                        sim = local_brain.calculate_similarity(cluster_vec, desc_vec)
+                        if sim > max_similarity:
+                            max_similarity = sim
 
-                # Check against ALL clusters and take MAX similarity
-                max_similarity = 0.0
-                for cluster_vec in interest_clusters:
-                    sim = local_brain.calculate_similarity(cluster_vec, desc_vec)
-                    if sim > max_similarity:
-                        max_similarity = sim
+                    similarity = max_similarity
 
-                similarity = max_similarity
+                    f_id = await storage.save_finding(
+                        finding.title,
+                        finding.url,
+                        finding.description,
+                        finding.stars,
+                        finding.language,
+                        embedding=desc_vec.tobytes()
+                    )
 
-                # Save first to get ID, now passing embedding
-                f_id = await storage.save_finding(
-                    finding.title,
-                    finding.url,
-                    finding.description,
-                    finding.stars,
-                    finding.language,
-                    embedding=desc_vec.tobytes()
-                )
+                    if f_id == -1:
+                         dashboard.add_log(f"Skipped (duplicate): {finding.title}", logging.WARNING)
+                         continue
 
-                if f_id == -1:
-                     # Already exists
-                     console.print(f"  [yellow]Skipped (duplicate): {finding.title}[/yellow]")
-                     continue
+                    # If good match, Analyze
+                    if similarity >= min_score:
+                        dashboard.add_log(f"High Signal ({similarity:.2f}): {finding.title}", logging.INFO)
+                        dashboard.update_status(f"Analyzing: {finding.title}")
 
-                # If good match, Analyze
-                if similarity >= min_score:
-                    console.print(f"  [green]High Signal ({similarity:.2f}): {finding.title}[/green]")
-
-                    with console.status(f"  Analyzing with CloudBrain...") as status:
                         summary, relevance = await cloud_brain.analyze_repo(finding.readme_content)
+                        await storage.update_finding_analysis(f_id, summary, relevance)
+                        count_analyzed += 1
+                        
+                        # Add to TUI Findings List and Session List
+                        finding_data = {
+                            "title": finding.title,
+                            "score": similarity,
+                            "description": summary,
+                            "url": finding.url
+                        }
+                        dashboard.add_finding(finding_data)
+                        session_findings.append(finding_data)
 
-                    await storage.update_finding_analysis(f_id, summary, relevance)
-                    count_analyzed += 1
-                else:
-                    # Low score
-                    await storage.update_finding_analysis(f_id, "Filtered by Screener", similarity)
+                    else:
+                        await storage.update_finding_analysis(f_id, "Filtered by Screener", similarity)
 
-                count_screened += 1
+                    count_screened += 1
+                    
+                    # Update Stats
+                    dashboard.update_stats(scanned=count_screened, analyzed=count_analyzed)
 
-            console.print(f"Processed {count_screened} items. Analyzed {count_analyzed} promising candidates.")
+                dashboard.add_log(f"Iteration finished. Analyzed {count_analyzed} candidates.", logging.INFO)
 
-    finally:
-        await hunter.close()
-        await storage.close()
+        finally:
+            dashboard.update_status("Shutting down...")
+            # We don't remove handlers here to keep logging active if needed, 
+            # but usually it's fine as the script exits.
+            await hunter.close()
+            await storage.close()
+
+    # Post-TUI Summary
+    if session_findings:
+        console.print("\n[bold green]🚀 Session Summary: High Signal Findings[/bold green]")
+        table = Table(box=None, expand=True)
+        table.add_column("Score", style="magenta", justify="right")
+        table.add_column("Repository", style="bold")
+        table.add_column("AI Analysis")
+
+        for f in session_findings:
+            table.add_row(
+                f"{f['score']:.2f}",
+                f"[link={f['url']}]{f['title']}[/link]",
+                f["description"]
+            )
+        console.print(table)
+        console.print(f"\n[dim]Detailed logs written to 'tuner.log'[/dim]\n")
+    else:
+         console.print("\n[yellow]No high-signal findings this session.[/yellow]\n")
 
 @app.command()
 def list(
@@ -350,4 +415,6 @@ async def _optimize_strategy():
         await storage.close()
 
 if __name__ == "__main__":
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     app()

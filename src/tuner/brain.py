@@ -96,7 +96,8 @@ class CloudBrain:
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=self.api_key)
-                self.model = genai.GenerativeModel('gemini-1.5-flash')
+                # 'gemini-1.5-flash' legacy alias issues. Using confirmed available model.
+                self.model = genai.GenerativeModel('models/gemini-flash-latest')
             except ImportError:
                 logger.warning("google-generativeai not installed. CloudBrain will operate in mock mode.")
             except Exception as e:
@@ -130,6 +131,60 @@ class CloudBrain:
 
         # Mock response
         return "A interesting repository found by the mock brain.", 0.85
+
+    async def generate_strategy_v2(self, mission: Dict[str, Any], session_stats: Dict[str, Any], feedback_history: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Generate a new search strategy based on MISSION, Stats, and Feedback."""
+        if self.model:
+            try:
+                stats_str = json.dumps(session_stats, indent=2)
+                feedback_str = json.dumps(feedback_history[-20:], indent=2) # Last 20 feedback items
+                mission_str = json.dumps(mission, indent=2)
+
+                prompt = f"""
+                You are an Autonomous Research Manager. optimize the search strategy for a GitHub scraper.
+
+                MISSION:
+                {mission_str}
+
+                LAST SESSION STATS:
+                {stats_str}
+
+                USER FEEDBACK (Recent):
+                {feedback_str}
+
+                TASK:
+                Analyze the yield rate (interesting/scanned). If low, change keywords or filters.
+                If the user disliked many items, identify why and add 'exclude_patterns'.
+                Respect the Mission constraints (e.g. Languages).
+
+                Return a JSON object with this structure:
+                {{
+                    "keywords": ["list", "of", "keywords"],
+                    "languages": ["list", "of", "languages"],
+                    "min_stars": 50,
+                    "exclude_patterns": ["regex", "patterns"],
+                    "date_range": "pushed:>2024-01-01",
+                    "sort_by": "updated" (or stars)
+                }}
+                """
+                response = self.model.generate_content(prompt)
+                text = response.text
+                start = text.find('{')
+                end = text.rfind('}') + 1
+                if start != -1 and end != -1:
+                    return json.loads(text[start:end])
+            except Exception as e:
+                logger.error(f"CloudBrain strategy generation failed: {e}")
+
+        # Mock fallback strategy
+        return {
+            "keywords": mission.get("languages", ["Python"]) + ["framework"],
+            "languages": mission.get("languages", ["Python"]),
+            "min_stars": max(10, mission.get("min_stars", 50) - 10), # Lower stars to find more
+            "exclude_patterns": ["tutorial"],
+            "date_range": "pushed:>2023-01-01",
+            "sort_by": "stars"
+        }
 
     async def generate_strategy(self, feedback_history: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Generate a new search strategy based on feedback."""

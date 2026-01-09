@@ -1,0 +1,17 @@
+{
+    "keywords": [
+        "interactive python ml",
+        "data exploration",
+        "ml application interface",
+        "synthetic data"
+    ],
+    "languages": [
+        "Python"
+    ],
+    "min_stars": 50,
+    "exclude_patterns": [
+        ".*(langchain|observability|telemetry|agent framework|llm ops|prompt management).*"
+    ],
+    "date_range": "pushed:>2024-01-01",
+    "sort_by": "updated"
+}

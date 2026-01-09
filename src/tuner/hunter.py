@@ -53,7 +53,10 @@ class Hunter:
         query_parts.append(f"stars:>={min_stars}")
 
         query = " ".join(query_parts)
-        url = f"https://api.github.com/search/repositories?q={query}&sort=updated&order=desc&per_page=10"
+        # Adding random page to avoid getting stuck on the same top 10 results forever
+        import random
+        page = random.randint(1, 5)
+        url = f"https://api.github.com/search/repositories?q={query}&sort=updated&order=desc&per_page=10&page={page}"
 
         logger.info(f"Searching GitHub: {query}")
 

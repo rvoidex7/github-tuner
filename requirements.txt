@@ -9,3 +9,4 @@ numpy
 aiosqlite
 scikit-learn
 feedparser
+python-dotenv>=1.0.0
