@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import httpx
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
 # Configure logging
@@ -40,8 +40,33 @@ class Hunter:
                 "languages": ["Python"]
             }
 
+    async def search_raw(self, query: str, page: int = 1, per_page: int = 10) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+        """
+        Execute a raw GitHub search.
+        Returns: (items, response_headers)
+        """
+        url = f"https://api.github.com/search/repositories?q={query}&sort=updated&order=desc&per_page={per_page}&page={page}"
+        logger.debug(f"Executing search: {url}")
+
+        try:
+            headers = {}
+            token = os.getenv("GITHUB_TOKEN")
+            if token:
+                headers["Authorization"] = f"token {token}"
+
+            resp = await self.client.get(url, headers=headers)
+
+            # We return headers so the RateLimitMonitor can track them
+            return resp.json().get("items", []), dict(resp.headers)
+
+        except Exception as e:
+            logger.error(f"GitHub raw search failed: {e}")
+            return [], {}
+
     async def search_github(self) -> List[RawFinding]:
-        """Search GitHub based on strategy."""
+        """Legacy synchronous-style search (for CLI compatibility)."""
+        logger.warning("Using legacy search_github. Switching to workers recommended.")
+
         strategy = self._load_strategy()
         keywords = strategy.get("keywords", [])
         languages = strategy.get("languages", [])
@@ -51,70 +76,19 @@ class Hunter:
         for lang in languages:
             query_parts.append(f"language:{lang}")
         query_parts.append(f"stars:>={min_stars}")
-
         query = " ".join(query_parts)
-        # Adding random page to avoid getting stuck on the same top 10 results forever
+
+        # Simple random page
         import random
         page = random.randint(1, 5)
-        url = f"https://api.github.com/search/repositories?q={query}&sort=updated&order=desc&per_page=10&page={page}"
 
-        logger.info(f"Searching GitHub: {query}")
+        items, _ = await self.search_raw(query, page=page)
 
-        try:
-            # Check for token
-            headers = {}
-            token = os.getenv("GITHUB_TOKEN")
-            if token:
-                headers["Authorization"] = f"token {token}"
+        findings = []
+        for item in items:
+            findings.append(await self._process_item(item))
 
-            resp = await self.client.get(url, headers=headers)
-
-            if resp.status_code == 403:
-                await self._handle_rate_limit(resp)
-                # Retry once? For now, just return empty to be safe
-                return []
-
-            await self._check_rate_limit(resp)
-            resp.raise_for_status()
-            data = resp.json()
-
-            items = data.get("items", [])
-            tasks = []
-
-            # Create tasks for concurrent fetching
-            for item in items:
-                tasks.append(self._process_item(item))
-
-            # Gather results
-            findings = await asyncio.gather(*tasks)
-            return findings
-
-        except Exception as e:
-            logger.error(f"GitHub search failed: {e}")
-            return []
-
-    async def _check_rate_limit(self, resp: httpx.Response):
-        """Check Rate Limit headers and sleep if needed."""
-        try:
-            remaining = int(resp.headers.get("X-RateLimit-Remaining", 100))
-            reset_time = int(resp.headers.get("X-RateLimit-Reset", 0))
-
-            if remaining < 10:
-                wait_seconds = max(0, reset_time - int(asyncio.get_running_loop().time()))
-                # Note: reset_time is epoch, so we need time.time(), but asyncio sleep is seconds.
-                import time
-                wait_seconds = max(0, reset_time - int(time.time()) + 1)
-
-                logger.warning(f"Rate limit low ({remaining}). Sleeping for {wait_seconds} seconds...")
-                await asyncio.sleep(wait_seconds)
-                logger.info("Resuming from rate limit sleep.")
-        except Exception as e:
-            logger.warning(f"Error checking rate limit: {e}")
-
-    async def _handle_rate_limit(self, resp: httpx.Response):
-        """Handle 403 Rate Limit Exceeded."""
-        logger.warning("Rate limited by GitHub API (403).")
-        await self._check_rate_limit(resp)
+        return findings
 
     async def _process_item(self, item: Dict[str, Any]) -> RawFinding:
         """Fetch readme and create RawFinding object."""

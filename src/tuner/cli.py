@@ -23,6 +23,7 @@ from tuner.brain import LocalBrain, CloudBrain
 from tuner.storage import TunerStorage
 from tuner.tui import TunerDashboard, TuiLogHandler
 from tuner.manager import AutonomousManager
+from tuner.workers import WorkerManager
 from tuner.menu import main as menu_main
 from rich.live import Live
 import numpy as np
@@ -79,9 +80,48 @@ def main(
 
 @app.command()
 def agent():
-    """Start the autonomous background agent (daemon mode)."""
-    manager = AutonomousManager()
-    asyncio.run(manager.start())
+    """Start the autonomous background agent (worker mode)."""
+    asyncio.run(_run_agent())
+
+async def _run_agent():
+    console.print(Panel.fit("[bold blue]GitHub Tuner[/bold blue] 👷 Starting Async Workers..."))
+
+    # Initialize Worker Manager
+    manager = WorkerManager(DB_PATH)
+
+    # Create initial scout task if queue is empty?
+    # For now, let's inject a seed task if needed.
+    # Ideally, the user injects a task via another command, or we load from strategy.
+
+    # Ensure DB is ready
+    await manager.storage.initialize()
+
+    # Simple Seed: Check if tasks exist, if not, add one based on strategy
+    # Note: This is a hack for now to kickstart.
+    # Real "Recursive Date Slicing" will come in Phase 3.
+    # Here we just want to prove the workers work.
+
+    # We need to access queue directly to check size?
+    # Or just let it run. If no tasks, it sleeps.
+
+    # Let's add a seed task manually for demo
+    # We can use the strategy.json
+    try:
+        with open(STRATEGY_PATH, "r") as f:
+            strat = json.load(f)
+            query = f"{' '.join(strat.get('keywords', []))} stars:>={strat.get('min_stars', 50)}"
+
+            # Enqueue a seed search task
+            await manager.queue.enqueue_task("search", {"query": query, "page": 1}, priority=10)
+            console.print(f"[green]Seeded queue with query: {query}[/green]")
+    except Exception as e:
+        console.print(f"[red]Failed to seed strategy: {e}[/red]")
+
+    try:
+        await manager.start()
+    except KeyboardInterrupt:
+        console.print("[yellow]Stopping workers...[/yellow]")
+        await manager.stop()
 
 @app.command()
 def init():
