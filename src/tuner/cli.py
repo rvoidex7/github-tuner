@@ -124,6 +124,40 @@ async def _run_agent():
         await manager.stop()
 
 @app.command()
+def deep_scan(
+    start_date: str = typer.Option("2024-01-01", help="Start date (YYYY-MM-DD)"),
+    end_date: str = typer.Option(None, help="End date (YYYY-MM-DD). Defaults to now."),
+    keywords: str = typer.Option("machine learning", help="Base keywords to search")
+):
+    """Start a Deep Scan using Recursive Date Slicing."""
+    asyncio.run(_run_deep_scan(start_date, end_date, keywords))
+
+async def _run_deep_scan(start_date: str, end_date: str, keywords: str):
+    import pendulum
+    if not end_date:
+        end_date = pendulum.now().to_date_string()
+
+    console.print(Panel.fit(f"[bold blue]GitHub Tuner[/bold blue] 🌊 Deep Scan Initiated\nRange: {start_date} -> {end_date}\nQuery: {keywords}"))
+
+    manager = WorkerManager(DB_PATH)
+    await manager.storage.initialize()
+
+    # Enqueue Root Task
+    await manager.queue.enqueue_task("discovery", {
+        "query": keywords,
+        "start_date": start_date,
+        "end_date": end_date
+    }, priority=100)
+
+    console.print("[green]Root task enqueued. Starting workers...[/green]")
+
+    try:
+        await manager.start()
+    except KeyboardInterrupt:
+        console.print("[yellow]Stopping workers...[/yellow]")
+        await manager.stop()
+
+@app.command()
 def init():
     """Initialize user profile by analyzing starred repos."""
     asyncio.run(_init_profile())

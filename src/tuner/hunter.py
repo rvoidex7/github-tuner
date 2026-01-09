@@ -40,10 +40,10 @@ class Hunter:
                 "languages": ["Python"]
             }
 
-    async def search_raw(self, query: str, page: int = 1, per_page: int = 10) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+    async def search_raw(self, query: str, page: int = 1, per_page: int = 10) -> Tuple[List[Dict[str, Any]], Dict[str, str], int]:
         """
         Execute a raw GitHub search.
-        Returns: (items, response_headers)
+        Returns: (items, response_headers, total_count)
         """
         url = f"https://api.github.com/search/repositories?q={query}&sort=updated&order=desc&per_page={per_page}&page={page}"
         logger.debug(f"Executing search: {url}")
@@ -55,13 +55,14 @@ class Hunter:
                 headers["Authorization"] = f"token {token}"
 
             resp = await self.client.get(url, headers=headers)
+            data = resp.json()
 
             # We return headers so the RateLimitMonitor can track them
-            return resp.json().get("items", []), dict(resp.headers)
+            return data.get("items", []), dict(resp.headers), data.get("total_count", 0)
 
         except Exception as e:
             logger.error(f"GitHub raw search failed: {e}")
-            return [], {}
+            return [], {}, 0
 
     async def search_github(self) -> List[RawFinding]:
         """Legacy synchronous-style search (for CLI compatibility)."""
@@ -82,7 +83,11 @@ class Hunter:
         import random
         page = random.randint(1, 5)
 
-        items, _ = await self.search_raw(query, page=page)
+        # Simple sleep to be nice to API in legacy mode
+        import asyncio
+        await asyncio.sleep(1)
+
+        items, _, _ = await self.search_raw(query, page=page)
 
         findings = []
         for item in items:

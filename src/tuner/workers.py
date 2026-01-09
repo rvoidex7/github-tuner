@@ -8,6 +8,7 @@ from tuner.storage import TaskQueue, TunerStorage
 from tuner.monitor import RateLimitMonitor
 from tuner.hunter import Hunter
 from tuner.brain import LocalBrain, CloudBrain
+from tuner.slicer import split_date_range, get_query_with_date
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,7 @@ class WorkerManager:
 
     async def scout_worker(self):
         """
-        The Scout: Consumes 'search' tasks.
-        Payload: { "query": "...", "page": 1, "min_stars": ... }
+        The Scout: Consumes 'search' and 'discovery' tasks.
         """
         while self.running:
             try:
@@ -60,47 +60,86 @@ class WorkerManager:
                     await asyncio.sleep(1) # Idle wait
                     continue
 
-                logger.info(f"🔭 Scout picked up task: {task['id']}")
+                # logger.info(f"🔭 Scout picked up task: {task['id']} ({task['type']})")
                 payload = task['payload']
 
                 # Check Rate Limit
                 await self.monitor.check_and_sleep("Scout")
 
-                # Execute Search
-                # We need a method in Hunter that accepts raw query params and returns raw items
-                # The current Hunter.search_github() is too high-level.
-                # We will use Hunter's client directly or a new method.
-                # Assuming we refactor Hunter to have `search_raw(query, page)`.
+                if task['type'] == 'search':
+                    await self._handle_search_task(task, payload)
+                elif task['type'] == 'discovery':
+                    await self._handle_discovery_task(task, payload)
 
-                # For now, let's assume payload has 'query'
-                query = payload.get("query", "stars:>100")
-                page = payload.get("page", 1)
-
-                # Perform search (using a new method we'll add to Hunter)
-                results, headers = await self.hunter.search_raw(query, page=page)
-
-                # Update Monitor
-                self.monitor.update_from_headers(headers)
-
-                # Enqueue Results for Fetcher
-                for item in results:
-                    fetch_payload = {
-                        "owner": item["owner"]["login"],
-                        "repo": item["name"],
-                        "branch": item["default_branch"],
-                        "meta": item # Pass along metadata
-                    }
-                    await self.queue.enqueue_task("fetch_readme", fetch_payload, priority=5)
-
-                logger.info(f"🔭 Scout found {len(results)} items.")
                 await self.queue.complete_task(task['id'])
 
             except Exception as e:
                 logger.error(f"Scout failed: {e}")
-                # traceback.print_exc()
+                traceback.print_exc()
                 if task:
                     await self.queue.fail_task(task['id'], str(e))
                 await asyncio.sleep(5) # Backoff
+
+    async def _handle_search_task(self, task, payload):
+        """Handle standard paginated search task."""
+        query = payload.get("query", "stars:>100")
+        page = payload.get("page", 1)
+
+        # Request 100 items per page to match discovery pagination logic
+        results, headers, _ = await self.hunter.search_raw(query, page=page, per_page=100)
+        self.monitor.update_from_headers(headers)
+
+        for item in results:
+            fetch_payload = {
+                "owner": item["owner"]["login"],
+                "repo": item["name"],
+                "branch": item["default_branch"],
+                "meta": item
+            }
+            await self.queue.enqueue_task("fetch_readme", fetch_payload, priority=5)
+
+        logger.info(f"🔭 Scout (Page {page}) found {len(results)} items.")
+
+    async def _handle_discovery_task(self, task, payload):
+        """Handle recursive date slicing discovery."""
+        base_query = payload.get("query")
+        start_date = payload.get("start_date")
+        end_date = payload.get("end_date")
+
+        full_query = get_query_with_date(base_query, start_date, end_date)
+
+        # Check count (Page 1)
+        # We only need metadata here, but we get items too.
+        results, headers, total_count = await self.hunter.search_raw(full_query, page=1, per_page=1)
+        self.monitor.update_from_headers(headers)
+
+        logger.info(f"🔭 Discovery [{start_date} .. {end_date}]: {total_count} repos found.")
+
+        if total_count > 1000:
+            # Split
+            s, m, e = split_date_range(start_date, end_date)
+            logger.info(f"✂️ Splitting: {s} -> {m} -> {e}")
+
+            # Enqueue halves (High Priority to drill down fast)
+            await self.queue.enqueue_task("discovery",
+                {"query": base_query, "start_date": s, "end_date": m}, priority=task['priority'] + 1)
+            await self.queue.enqueue_task("discovery",
+                {"query": base_query, "start_date": m, "end_date": e}, priority=task['priority'] + 1)
+
+        else:
+            # Safe zone: Enqueue pages
+            # GitHub max 1000 items, 100 per page = 10 pages.
+            import math
+            pages = min(10, math.ceil(total_count / 100.0))
+            if pages == 0 and total_count > 0: pages = 1
+
+            logger.info(f"✅ Safe Zone. Enqueuing {pages} page tasks.")
+
+            for p in range(1, pages + 1):
+                # Enqueue a standard search task for this specific range
+                # We use the full_query which includes the date range
+                await self.queue.enqueue_task("search",
+                    {"query": full_query, "page": p}, priority=5)
 
     async def fetch_worker(self):
         """
