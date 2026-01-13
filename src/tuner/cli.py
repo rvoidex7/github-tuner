@@ -84,44 +84,50 @@ def agent():
     asyncio.run(_run_agent())
 
 async def _run_agent():
-    console.print(Panel.fit("[bold blue]GitHub Tuner[/bold blue] 👷 Starting Async Workers..."))
+    console.print(Panel.fit("[bold blue]GitHub Tuner[/bold blue] 👷 Starting Background Mission Agent..."))
 
-    # Initialize Worker Manager
-    manager = WorkerManager(DB_PATH)
+    # Configure Logging (Force Reconfigure)
+    root = logging.getLogger()
+    if root.handlers:
+        for handler in root.handlers[:]:
+            root.removeHandler(handler)
+    
+    root.setLevel(logging.DEBUG)
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    
+    fh = logging.FileHandler("tuner.log", mode='a', encoding='utf-8')
+    fh.setFormatter(formatter)
+    root.addHandler(fh)
+    
+    sh = logging.StreamHandler()
+    sh.setFormatter(formatter)
+    root.addHandler(sh)
 
-    # Create initial scout task if queue is empty?
-    # For now, let's inject a seed task if needed.
-    # Ideally, the user injects a task via another command, or we load from strategy.
-
-    # Ensure DB is ready
-    await manager.storage.initialize()
-
-    # Simple Seed: Check if tasks exist, if not, add one based on strategy
-    # Note: This is a hack for now to kickstart.
-    # Real "Recursive Date Slicing" will come in Phase 3.
-    # Here we just want to prove the workers work.
-
-    # We need to access queue directly to check size?
-    # Or just let it run. If no tasks, it sleeps.
-
-    # Let's add a seed task manually for demo
-    # We can use the strategy.json
-    try:
-        with open(STRATEGY_PATH, "r") as f:
-            strat = json.load(f)
-            query = f"{' '.join(strat.get('keywords', []))} stars:>={strat.get('min_stars', 50)}"
-
-            # Enqueue a seed search task
-            await manager.queue.enqueue_task("search", {"query": query, "page": 1}, priority=10)
-            console.print(f"[green]Seeded queue with query: {query}[/green]")
-    except Exception as e:
-        console.print(f"[red]Failed to seed strategy: {e}[/red]")
+    # Initialize Autonomous Manager (Supports Missions)
+    manager = AutonomousManager(db_path=DB_PATH, strategy_path=STRATEGY_PATH, mission_path="missions.json")
 
     try:
         await manager.start()
     except KeyboardInterrupt:
-        console.print("[yellow]Stopping workers...[/yellow]")
-        await manager.stop()
+        console.print("[yellow]Stopping agent...[/yellow]")
+        manager.stop()
+    except Exception as e:
+        console.print(f"[red]Agent crashed: {e}[/red]")
+        logging.exception("Agent crashed")
+
+@app.command()
+def reset():
+    """Reset the database (clear all findings and history)."""
+    asyncio.run(_reset_db())
+
+async def _reset_db():
+    storage = TunerStorage(DB_PATH)
+    console.print(Panel.fit("[bold red]GitHub Tuner[/bold red] 🗑️ Resetting Database..."))
+    try:
+        await storage.reset_database()
+        console.print("[green]Database has been reset successfully.[/green]")
+    except Exception as e:
+        console.print(f"[red]Failed to reset database: {e}[/red]")
 
 @app.command()
 def init():
@@ -185,122 +191,48 @@ async def _run_tuning_loop(iterations: int, min_score: float):
         ]
     )
     
-    # Capture findings for post-TUI summary
-    session_findings = []
+    # Initialize Autonomous Manager
+    manager = AutonomousManager(db_path=DB_PATH, strategy_path=STRATEGY_PATH, mission_path="missions.json")
 
     with Live(dashboard, refresh_per_second=4, screen=True) as live:
         try:
-            dashboard.update_status("Loading user profile...")
-            # Load user interests for screener
-            interest_clusters = []
-            if os.path.exists(USER_PROFILE_PATH):
-                try:
-                    interest_clusters = np.load(USER_PROFILE_PATH)
-                    if len(interest_clusters.shape) == 1:
-                        interest_clusters = interest_clusters.reshape(1, -1)
-                except Exception:
-                    dashboard.add_log("Failed to load profile. Re-run init.", logging.ERROR)
-
-            if len(interest_clusters) == 0:
-                dashboard.add_log("No user profile found. Using strategy keywords...", logging.WARNING)
-                strategy = hunter._load_strategy()
-                keywords = " ".join(strategy.get("keywords", []))
-                interest_clusters = [local_brain.vectorize(keywords)]
-
-            for i in range(iterations):
-                dashboard.iteration_info = f"Iteration {i+1}/{iterations}"
+            dashboard.update_status("Starting Autonomous Manager...")
+            
+            # Run Manager in background task
+            mgr_task = asyncio.create_task(manager.start())
+            
+            # Run UI Loop to update stats
+            while not mgr_task.done():
+                dashboard.update_status("Running Missions...")
+                # Update stats from manager
+                dashboard.update_stats(
+                    scanned=manager.session_stats["scanned"],
+                    analyzed=manager.session_stats["interested"]
+                )
                 
-                # 1. Hunter
-                dashboard.update_status("Hunting for repositories...")
-                raw_findings = await hunter.search_github()
+                # We could pull findings from DB or have manager emit them.
+                # For now, just rely on logs.
+                 
+                # Update current mission in UI if possible
+                if manager.mission_control.current_mission:
+                     dashboard.iteration_info = f"Mission: {manager.mission_control.current_mission.name}"
                 
-                dashboard.add_log(f"Found {len(raw_findings)} raw candidates", logging.INFO)
-
-                count_screened = 0
-                count_analyzed = 0
-
-                # 2. Screener & 3. Analyst
-                dashboard.update_status("Screening & Analyzing...")
-                
-                for finding in raw_findings:
-                    # Screen
-                    desc_vec = local_brain.vectorize(f"{finding.title} {finding.description}")
-
-                    max_similarity = 0.0
-                    for cluster_vec in interest_clusters:
-                        sim = local_brain.calculate_similarity(cluster_vec, desc_vec)
-                        if sim > max_similarity:
-                            max_similarity = sim
-
-                    similarity = max_similarity
-
-                    f_id = await storage.save_finding(
-                        finding.title,
-                        finding.url,
-                        finding.description,
-                        finding.stars,
-                        finding.language,
-                        embedding=desc_vec.tobytes()
-                    )
-
-                    if f_id == -1:
-                         dashboard.add_log(f"Skipped (duplicate): {finding.title}", logging.WARNING)
-                         continue
-
-                    # If good match, Analyze
-                    if similarity >= min_score:
-                        dashboard.add_log(f"High Signal ({similarity:.2f}): {finding.title}", logging.INFO)
-                        dashboard.update_status(f"Analyzing: {finding.title}")
-
-                        summary, relevance = await cloud_brain.analyze_repo(finding.readme_content)
-                        await storage.update_finding_analysis(f_id, summary, relevance)
-                        count_analyzed += 1
-                        
-                        # Add to TUI Findings List and Session List
-                        finding_data = {
-                            "title": finding.title,
-                            "score": similarity,
-                            "description": summary,
-                            "url": finding.url
-                        }
-                        dashboard.add_finding(finding_data)
-                        session_findings.append(finding_data)
-
-                    else:
-                        await storage.update_finding_analysis(f_id, "Filtered by Screener", similarity)
-
-                    count_screened += 1
-                    
-                    # Update Stats
-                    dashboard.update_stats(scanned=count_screened, analyzed=count_analyzed)
-
-                dashboard.add_log(f"Iteration finished. Analyzed {count_analyzed} candidates.", logging.INFO)
-
+                await asyncio.sleep(0.5)
+            
+            await mgr_task
+            
+        except KeyboardInterrupt:
+            dashboard.update_status("Stopping...")
+            manager.stop()
+            await mgr_task
+            
         finally:
             dashboard.update_status("Shutting down...")
-            # We don't remove handlers here to keep logging active if needed, 
-            # but usually it's fine as the script exits.
-            await hunter.close()
-            await storage.close()
+            logging.getLogger().handlers = [] # Clear handlers
 
-    # Post-TUI Summary
-    if session_findings:
-        console.print("\n[bold green]🚀 Session Summary: High Signal Findings[/bold green]")
-        table = Table(box=None, expand=True)
-        table.add_column("Score", style="magenta", justify="right")
-        table.add_column("Repository", style="bold")
-        table.add_column("AI Analysis")
-
-        for f in session_findings:
-            table.add_row(
-                f"{f['score']:.2f}",
-                f"[link={f['url']}]{f['title']}[/link]",
-                f["description"]
-            )
-        console.print(table)
-        console.print(f"\n[dim]Detailed logs written to 'tuner.log'[/dim]\n")
-    else:
-         console.print("\n[yellow]No high-signal findings this session.[/yellow]\n")
+    # Post-TUI Summary (Simplified for now as Manager runs indefinitely)
+    console.print("\n[bold green]🚀 Session Complete[/bold green]")
+    console.print(f"[dim]Detailed logs written to 'tuner.log'[/dim]\n")
 
 @app.command()
 def list(

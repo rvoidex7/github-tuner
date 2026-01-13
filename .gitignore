@@ -27,3 +27,8 @@ htmlcov/
 venv/
 ENV/
 .env
+
+# User Data
+missions.json
+tuner.log
+strategy.json

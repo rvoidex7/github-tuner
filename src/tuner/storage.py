@@ -29,6 +29,23 @@ class TunerStorage:
             await self._memory_conn.close()
             self._memory_conn = None
 
+    async def reset_database(self):
+        """Reset the database by dropping all tables."""
+        if self.db_path == ":memory:":
+             # Just close and re-open? Or drop tables.
+             pass
+        try:
+             # Close existing connection if any
+             await self.close()
+             
+             if hasattr(aiosqlite, 'connect'): 
+                 # Helper to drop
+                 if self.db_path != ":memory:" and os.path.exists(self.db_path):
+                     os.remove(self.db_path)
+        except Exception as e:
+            print(f"Error resetting DB: {e}")
+
+
     async def _create_tables(self, db):
         # Findings table
         await db.execute("""
@@ -62,10 +79,20 @@ class TunerStorage:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 finding_id INTEGER,
                 action TEXT NOT NULL,
+                category TEXT,
+                reason TEXT,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (finding_id) REFERENCES findings (id)
             )
         """)
+        
+        # Check if columns exist (migration hack for dev)
+        try:
+             await db.execute("ALTER TABLE feedback_logs ADD COLUMN category TEXT")
+        except: pass
+        try:
+             await db.execute("ALTER TABLE feedback_logs ADD COLUMN reason TEXT")
+        except: pass
 
         # Tasks Queue table
         await db.execute("""
@@ -127,13 +154,13 @@ class TunerStorage:
             await db.execute("UPDATE findings SET status = ? WHERE id = ?", (status, finding_id))
             await db.commit()
 
-    async def log_feedback(self, finding_id: int, action: str):
-        """Log user feedback."""
+    async def log_feedback(self, finding_id: int, action: str, category: str = None, reason: str = None):
+        """Log user feedback with optional category and reason."""
         async with self._get_conn_ctx() as db:
             await db.execute("""
-                INSERT INTO feedback_logs (finding_id, action)
-                VALUES (?, ?)
-            """, (finding_id, action))
+                INSERT INTO feedback_logs (finding_id, action, category, reason)
+                VALUES (?, ?, ?, ?)
+            """, (finding_id, action, category, reason))
             await db.commit()
 
     async def get_finding(self, finding_id: int) -> Optional[Dict[str, Any]]:

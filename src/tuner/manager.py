@@ -41,11 +41,12 @@ class AutonomousManager:
         
         try:
             while self.running:
-                # 1. Load Context
-                self.mission_control.load_mission()
-                mission = self.mission_control.current_mission
+                # 1. Load Context & Cycle Mission
+                self.mission_control.load_missions() # Refresh from file potentially
+                mission = self.mission_control.next_mission()
+                
                 if not mission:
-                    logger.warning("No mission found. Sleeping.")
+                    logger.warning("No missions found. Sleeping.")
                     await asyncio.sleep(60)
                     continue
 
@@ -57,8 +58,8 @@ class AutonomousManager:
                 
                 # 4. Sleep (Avoid flooding logs if loop is too fast, though Hunter handles API limits)
                 if self.running:
-                    logger.info("Cycle complete. Resting for 60 seconds...")
-                    await asyncio.sleep(60)
+                    logger.info("Cycle complete. Resting for 10 seconds before next mission...")
+                    await asyncio.sleep(10) # Reduced from 60s for faster rotation
                     
         except Exception as e:
             logger.error(f"Manager crashed: {e}")
