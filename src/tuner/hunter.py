@@ -22,7 +22,7 @@ class RawFinding:
 class Hunter:
     def __init__(self, strategy_path: str = "strategy.json"):
         self.strategy_path = strategy_path
-        self.client = httpx.AsyncClient(headers={"User-Agent": "GitHub-Tuner/1.0"}, follow_redirects=True)
+        self.client = httpx.AsyncClient(headers={"User-Agent": "GitHub-Tuner/1.0"}, follow_redirects=True, timeout=30.0)
 
     async def close(self):
         await self.client.aclose()

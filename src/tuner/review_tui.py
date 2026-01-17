@@ -42,12 +42,23 @@ class ReviewTUI:
                 url = self.findings[self.current_index]['url']
                 webbrowser.open(url)
             elif choice == 'y':  # Like
-                await self.submit_feedback("up")
+                category = "relevant_good"
+                reason = self.console.input("[dim]Reason (optional): [/dim]").strip()
+                await self.submit_feedback("up", category, reason)
             elif choice == 'n':  # Dislike
-                await self.submit_feedback("down")
+                self.console.print("\n[bold red]Rejection Category:[/bold red]")
+                self.console.print("1. Irrelevant (Topic Mismatch)")
+                self.console.print("2. Quality Issue (Old/Abandoned/Empty)")
+                self.console.print("3. Off Topic (Spam/Wrong Language)")
+                
+                cat_choice = self.console.input("[bold]Select (1-3): [/bold]").strip()
+                categories = {"1": "irrelevant", "2": "relevant_bad", "3": "off_topic"}
+                category = categories.get(cat_choice, "irrelevant")
+                
+                reason = self.console.input("[bold]Reason for rejection: [/bold]").strip()
+                await self.submit_feedback("down", category, reason)
             
             # Advance
-            # (If we voted, we remove it or just show next? Let's just go next index for now, usually we'd pop)
             if choice in ['y', 'n']:
                  self.current_index += 1
             
@@ -83,10 +94,11 @@ class ReviewTUI:
 
         self.console.print(grid)
 
-    async def submit_feedback(self, vote_type: str):
+    async def submit_feedback(self, vote_type: str, category: str = None, reason: str = None):
         item = self.findings[self.current_index]
         action = "like" if vote_type == "up" else "dislike"
         status = "liked" if action == "like" else "disliked"
         
         await self.storage.update_finding_status(item['id'], status)
-        await self.storage.log_feedback(item['id'], action)
+        await self.storage.log_feedback(item['id'], action, category, reason) # Updated to pass extra args
+        self.console.print(f"[green]Feedback saved![/green]")

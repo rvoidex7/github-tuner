@@ -9,6 +9,7 @@ from tuner.hunter import Hunter
 from tuner.brain import LocalBrain, CloudBrain
 from tuner.storage import TunerStorage
 from tuner.mission import MissionControl
+from tuner.analytics import AnalyticsEngine
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ class AutonomousManager:
         self.mission_control = MissionControl(mission_path)
         self.cloud_brain = CloudBrain()
         self.local_brain = LocalBrain()
+        self.analytics = AnalyticsEngine(db_path)
         
         # Runtime State
         self.running = False
@@ -145,10 +147,6 @@ class AutonomousManager:
 
     async def reflect_and_optimize(self, mission):
         """Analyze performance and update strategy."""
-        # Rules for optimization:
-        # 1. If scanned > 50 and interested == 0: Strategy is bad.
-        # 2. Every X minutes?
-        
         scanned = self.session_stats["scanned"]
         interested = self.session_stats["interested"]
         
@@ -156,9 +154,25 @@ class AutonomousManager:
             yield_rate = interested / scanned
             logger.info(f"Session Yield: {yield_rate:.2%} ({interested}/{scanned})")
             
-            # If yield is very low, ask Brain to fix it
-            if yield_rate < 0.05: # Less than 5% relevant
-                logger.info("Yield too low. Requesting Strategy Optimization...")
+            # Analytics Report
+            analytics_report = await self.analytics.generate_report()
+            user_acceptance = analytics_report["yield_rates"].get("user_acceptance_rate", 1.0)
+            
+            # Optimization Triggers:
+            # 1. Low Session Yield (< 5%)
+            # 2. Low User Acceptance (< 30%) with sufficient data
+            # 3. Explicit 'Strategic Drift' detected by analytics (future)
+            
+            needs_optimization = False
+            if yield_rate < 0.05:
+                logger.info("Optimization Trigger: Low Yield Agent")
+                needs_optimization = True
+            elif user_acceptance < 0.3 and analytics_report["yield_rates"]["total_findings"] > 10:
+                logger.info("Optimization Trigger: Low User Acceptance")
+                needs_optimization = True
+
+            if needs_optimization:
+                logger.info("Requesting Strategy Optimization from CloudBrain...")
                 
                 # Fetch recent feedback to give context
                 feedback = await self.storage.get_feedback_history()
@@ -166,7 +180,8 @@ class AutonomousManager:
                 new_strat = await self.cloud_brain.generate_strategy_v2(
                     mission.to_dict(), 
                     self.session_stats, 
-                    feedback
+                    feedback,
+                    analytics_report # Pass the rich report
                 )
                 
                 if new_strat:

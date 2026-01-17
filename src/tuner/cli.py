@@ -269,12 +269,14 @@ async def _list_findings(limit: int):
 def vote(
     finding_id: int = typer.Argument(..., help="ID of the finding"),
     vote: str = typer.Argument(..., help="'up' (like) or 'down' (dislike)"),
+    category: str = typer.Option(None, "--category", "-c", help="Category: relevant_good, relevant_bad, irrelevant, off_topic"),
+    reason: str = typer.Option(None, "--reason", "-r", help="Free text reason for the vote"),
     star_on_github: bool = typer.Option(False, "--star-on-github", help="Star the repo on GitHub if liked"),
 ):
     """Vote on a finding to train the agent."""
-    asyncio.run(_handle_vote(finding_id, vote, star_on_github))
+    asyncio.run(_handle_vote(finding_id, vote, category, reason, star_on_github))
 
-async def _handle_vote(finding_id: int, vote: str, star_on_github: bool):
+async def _handle_vote(finding_id: int, vote: str, category: str, reason: str, star_on_github: bool):
     storage = TunerStorage(DB_PATH)
     await storage.initialize()
     local_brain = LocalBrain()
@@ -284,7 +286,7 @@ async def _handle_vote(finding_id: int, vote: str, star_on_github: bool):
         status = "liked" if action == "like" else "disliked"
 
         await storage.update_finding_status(finding_id, status)
-        await storage.log_feedback(finding_id, action)
+        await storage.log_feedback(finding_id, action, category, reason)
 
         console.print(f"[green]Voted {action} on finding {finding_id}.[/green]")
 
@@ -354,6 +356,42 @@ async def _handle_vote(finding_id: int, vote: str, star_on_github: bool):
                  console.print("[red]Could not determine repo URL for starring.[/red]")
     finally:
         await storage.close()
+
+@app.command()
+def report():
+    """Show the Agent's Self-Learning Report Card."""
+    from tuner.analytics import AnalyticsEngine
+    
+    async def _show_report():
+        engine = AnalyticsEngine(DB_PATH)
+        report = await engine.generate_report()
+        
+        # 1. Yield Rates
+        yields = report["yield_rates"]
+        table = Table(title="📊 Performance Metrics")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="magenta")
+        table.add_row("Total Findings", str(yields['total_findings']))
+        table.add_row("AI Approved", f"{yields['ai_approved']} (Yield: {yields['ai_yield']:.1%})")
+        table.add_row("User Acceptance", f"{yields['user_acceptance_rate']:.1%}")
+        console.print(table)
+        
+        # 2. Rejection Analysis
+        rejected = report["rejection_analysis"]
+        if rejected["by_category"]:
+            table = Table(title="❌ Rejection Reasons")
+            table.add_column("Category", style="red")
+            table.add_column("Count", style="white")
+            for item in rejected["by_category"]:
+                table.add_row(item['category'] or "Uncategorized", str(item['count']))
+            console.print(table)
+            
+        if rejected["common_reasons"]:
+            console.print("\n[bold red]📝 Common Complaints:[/bold red]")
+            for item in rejected["common_reasons"]:
+                 console.print(f"- {item['reason']} ({item['count']}x)")
+
+    asyncio.run(_show_report())
 
 @app.command()
 def optimize():

@@ -132,16 +132,17 @@ class CloudBrain:
         # Mock response
         return "A interesting repository found by the mock brain.", 0.85
 
-    async def generate_strategy_v2(self, mission: Dict[str, Any], session_stats: Dict[str, Any], feedback_history: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def generate_strategy_v2(self, mission: Dict[str, Any], session_stats: Dict[str, Any], feedback_history: List[Dict[str, Any]], analytics_report: Dict[str, Any] = None) -> Dict[str, Any]:
         """Generate a new search strategy based on MISSION, Stats, and Feedback."""
         if self.model:
             try:
                 stats_str = json.dumps(session_stats, indent=2)
                 feedback_str = json.dumps(feedback_history[-20:], indent=2) # Last 20 feedback items
                 mission_str = json.dumps(mission, indent=2)
+                analytics_str = json.dumps(analytics_report, indent=2) if analytics_report else "{}"
 
                 prompt = f"""
-                You are an Autonomous Research Manager. optimize the search strategy for a GitHub scraper.
+                You are an Autonomous Research Manager. Optimize the search strategy for a GitHub scraper.
 
                 MISSION:
                 {mission_str}
@@ -149,14 +150,18 @@ class CloudBrain:
                 LAST SESSION STATS:
                 {stats_str}
 
+                LONG_TERM ANALYTICS REPORT:
+                {analytics_str}
+
                 USER FEEDBACK (Recent):
                 {feedback_str}
 
                 TASK:
-                Analyze the yield rate (interesting/scanned). If low, change keywords or filters.
-                If the user disliked many items, identify why and add 'exclude_patterns'.
-                Respect the Mission constraints (e.g. Languages).
-
+                Analyze the yield rates and rejection reasons together.
+                - If 'ai_yield' is low, tighten keywords.
+                - If 'user_acceptance_rate' is low, check 'rejection_analysis' for why the user hates the results (e.g. specific languages, frameworks).
+                - Add 'exclude_patterns' to filter out rejected topics.
+                
                 Return a JSON object with this structure:
                 {{
                     "keywords": ["list", "of", "keywords"],
