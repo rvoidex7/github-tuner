@@ -76,9 +76,12 @@ class AutonomousManager:
         hunter = Hunter(self.strategy_path)
         
         try:
-            # Check strategy execution interval / limits? 
-            # For now, just run one batch search
-            findings = await hunter.search_github()
+            # Use mission-specific search instead of legacy strategy-based search
+            findings = await hunter.search_for_mission(
+                mission_goal=mission.goal,
+                languages=mission.languages,
+                min_stars=mission.min_stars
+            )
             
             # Load user profile for screening
             profile_path = "data/user_profile.npy" 
@@ -111,7 +114,7 @@ class AutonomousManager:
                 # Using Strategy default or Mission override
                 threshold = mission.min_stars / 1000.0 # Just a silly heuristic fallback? 
                 # Better: Use constant or strategy param
-                threshold = 0.4 
+                threshold = 0.25  # Lowered to allow more repos through
                 
                 f_id = await self.storage.save_finding(
                     finding.title, finding.url, finding.description, 

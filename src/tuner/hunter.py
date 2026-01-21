@@ -90,6 +90,69 @@ class Hunter:
 
         return findings
 
+    async def search_for_mission(self, mission_goal: str, languages: List[str], min_stars: int = 50) -> List[RawFinding]:
+        """
+        Search GitHub using mission-specific parameters.
+        Extracts keywords from the goal and builds a targeted query.
+        """
+        import random
+        import re
+        
+        # Stop words - common words that don't help search
+        stop_words = {"and", "the", "for", "with", "this", "that", "from", "like", "look", "find", "research", "focus", "on", "to", "a", "an", "of", "in", "or", "using", "similar", "tools", "best", "modern", "involving", "analyze", "look", "existing", "such", "as", "alternatives", "those", "user's", "list", "identify", "directory", "project", "implementations", "libraries", "patterns", "improve", "features", "practices", "enhancements", "component", "templates", "architecture", "app", "web"}
+        
+        # Priority keywords that should always be included if present
+        priority_keywords = {"whatsapp", "crm", "dashboard", "admin", "api", "tui", "cli", "python", "rust", "react", "nextjs", "next.js", "daisyui", "tailwind", "wrapper", "bot", "agent", "automation", "workflow"}
+        
+        goal_words = [w.lower().strip(",.()\"'") for w in mission_goal.split()]
+        
+        # First, extract priority keywords
+        found_priority = []
+        other_keywords = []
+        
+        for w in goal_words:
+            if len(w) < 3:
+                continue
+            if re.match(r'^https?://', w) or '/' in w or '\\' in w:
+                continue  # Skip URLs and paths
+            if w.startswith("d:") or w.startswith("c:"):
+                continue  # Skip Windows paths
+            if w in stop_words:
+                continue
+            
+            if w in priority_keywords:
+                found_priority.append(w)
+            else:
+                other_keywords.append(w)
+        
+        # Build final keywords: prioritize important ones, then add others (max 3 total)
+        keywords = found_priority[:2] + other_keywords[:max(0, 3 - len(found_priority[:2]))]
+        
+        if not keywords:
+            keywords = ["developer", "tools"]
+        
+        # Build query - use fewer keywords for broader results
+        query_parts = keywords[:3]  # Max 3 keywords
+        for lang in languages:
+            if lang.lower() != "any":
+                query_parts.append(f"language:{lang}")
+        query_parts.append(f"stars:>={min_stars}")
+        query = " ".join(query_parts)
+        
+        logger.info(f"🔍 Mission Search Query: {query}")
+        
+        # Always use page 1 to ensure we get results
+        page = 1
+        items, headers = await self.search_raw(query, page=page)
+        
+        logger.info(f"📦 Found {len(items)} items")
+        
+        findings = []
+        for item in items:
+            findings.append(await self._process_item(item))
+        
+        return findings
+
     async def _process_item(self, item: Dict[str, Any]) -> RawFinding:
         """Fetch readme and create RawFinding object."""
         readme = await self._fetch_readme(item["owner"]["login"], item["name"], item["default_branch"])

@@ -1,23 +1,15 @@
 {
     "keywords": [
-        "cli",
-        "terminal",
-        "tui",
-        "automation",
-        "productivity",
-        "workflow"
+        "Python",
+        "framework"
     ],
-    "languages": [],
-    "min_stars": 200,
+    "languages": [
+        "Python"
+    ],
+    "min_stars": 90,
     "exclude_patterns": [
-        "library",
-        "framework",
-        "tutorial",
-        "boilerplate",
-        "data science",
-        "machine learning",
-        "web-app"
+        "tutorial"
     ],
-    "date_range": "pushed:>2024-01-01",
+    "date_range": "pushed>2023-01-01",
     "sort_by": "stars"
 }

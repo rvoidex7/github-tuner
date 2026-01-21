@@ -107,6 +107,23 @@ class TunerStorage:
             )
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status_priority ON tasks (status, priority DESC)")
+        
+        # AI Usage tracking table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS ai_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                call_type TEXT NOT NULL,
+                model TEXT,
+                context_chars INTEGER,
+                tokens_in INTEGER,
+                tokens_out INTEGER,
+                success INTEGER DEFAULT 1,
+                error_type TEXT,
+                duration_ms INTEGER,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
         await db.commit()
 
     def _get_conn_ctx(self):
