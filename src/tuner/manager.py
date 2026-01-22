@@ -10,8 +10,62 @@ from tuner.brain import LocalBrain, CloudBrain
 from tuner.storage import TunerStorage
 from tuner.mission import MissionControl
 from tuner.analytics import AnalyticsEngine
+from tuner.tactics import TacticEngine
 
 logger = logging.getLogger(__name__)
+
+
+class AdaptiveThresholds:
+    """
+    Dynamic threshold management.
+    Automatically adjusts thresholds based on performance.
+    """
+    
+    def __init__(self, storage: TunerStorage):
+        self.storage = storage
+        self.defaults = {
+            "similarity_threshold": 0.25,
+            "ai_analysis_threshold": 0.4,
+        }
+        self._cache: Dict[str, Dict[str, float]] = {}
+    
+    async def get_threshold(self, mission_name: str, key: str) -> float:
+        """Return dynamic threshold per mission."""
+        # Check cache
+        if mission_name in self._cache and key in self._cache[mission_name]:
+            return self._cache[mission_name][key]
+        
+        # Calculate from performance data
+        try:
+            success_rates = await self.storage.get_tactic_success_rates(mission_name)
+            if success_rates:
+                avg_success = sum(success_rates.values()) / len(success_rates)
+                
+                # Lower threshold on low success, raise on high success
+                if key == "similarity_threshold":
+                    # If success is low, let more repos through
+                    adjusted = self.defaults[key] * (0.6 + 0.8 * (1 - avg_success))
+                    return max(0.1, min(0.5, adjusted))
+        except:
+            pass
+        
+        return self.defaults.get(key, 0.25)
+    
+    async def adjust_threshold(self, mission_name: str, key: str, direction: str):
+        """Adjust threshold (up/down)."""
+        current = await self.get_threshold(mission_name, key)
+        
+        if direction == "down":
+            new_val = max(0.1, current * 0.85)
+        else:
+            new_val = min(0.6, current * 1.15)
+        
+        if mission_name not in self._cache:
+            self._cache[mission_name] = {}
+        self._cache[mission_name][key] = new_val
+        
+        logger.info(f"📊 Adjusted {key} for {mission_name}: {current:.2f} → {new_val:.2f}")
+
 
 class AutonomousManager:
     def __init__(self, db_path="data/tuner.db", strategy_path="strategy.json", mission_path="mission.json"):
@@ -24,6 +78,8 @@ class AutonomousManager:
         self.cloud_brain = CloudBrain()
         self.local_brain = LocalBrain()
         self.analytics = AnalyticsEngine(db_path)
+        self.tactic_engine = TacticEngine(self.storage)
+        self.thresholds = AdaptiveThresholds(self.storage)
         
         # Runtime State
         self.running = False
@@ -32,6 +88,8 @@ class AutonomousManager:
             "interested": 0,
             "start_time": 0
         }
+        self._cycle_count = 0
+        self._ai_optimization_interval = 50  # Her 50 döngüde bir AI kullan
     
     async def start(self):
         """Start the autonomous research loop."""
@@ -70,27 +128,46 @@ class AutonomousManager:
             await self.storage.close()
 
     async def run_research_cycle(self, mission):
-        """Run the Hunter -> Screener loop."""
-        logger.info(f"Starting Research Cycle for Mission: {mission.name}")
+        """Run the Hunter -> Screener loop with TacticEngine."""
+        logger.info(f"🎯 Starting Research Cycle for Mission: {mission.name}")
         
         hunter = Hunter(self.strategy_path)
         
+        # Load tactic performance data
+        perf_data = await self.storage.get_tactic_success_rates(mission.name)
+        
+        # Select tactic (weighted random based on performance)
+        tactic = self.tactic_engine.select_tactic(mission.name, perf_data)
+        
+        # Dinamik eşik al
+        threshold = await self.thresholds.get_threshold(mission.name, "similarity_threshold")
+        
+        logger.info(f"📊 Using threshold: {threshold:.2f} for {mission.name}")
+        
+        results_found = 0
+        results_accepted = 0
+        results_rejected = 0
+        query_used = ""
+        
         try:
-            # Use mission-specific search instead of legacy strategy-based search
-            findings = await hunter.search_for_mission(
+            # Search with tactic
+            findings, query_used = await hunter.search_with_tactic(
                 mission_goal=mission.goal,
                 languages=mission.languages,
-                min_stars=mission.min_stars
+                tactic=tactic,
+                tactic_engine=self.tactic_engine
             )
+            
+            results_found = len(findings)
             
             # Load user profile for screening
             profile_path = "data/user_profile.npy" 
-            # (Ideally we'd use mission specific profile, but falling back to global for now)
             interest_clusters = []
             try:
-                if import_os_exists(profile_path): # Helper needed or simple os check
+                if import_os_exists(profile_path):
                     interest_clusters = np.load(profile_path)
-                    if len(interest_clusters.shape) == 1: interest_clusters = interest_clusters.reshape(1, -1)
+                    if len(interest_clusters.shape) == 1: 
+                        interest_clusters = interest_clusters.reshape(1, -1)
             except:
                 pass
                 
@@ -99,102 +176,144 @@ class AutonomousManager:
                 msg = f"{mission.goal} {' '.join(mission.languages)}"
                 interest_clusters = [self.local_brain.vectorize(msg)]
 
-            # Screen
+            # Screen findings
             for finding in findings:
                 self.session_stats["scanned"] += 1
                 
-                # Vector Screen
+                # Vector similarity check
                 desc_vec = self.local_brain.vectorize(f"{finding.title} {finding.description}")
                 max_sim = 0.0
                 for c in interest_clusters:
                     sim = self.local_brain.calculate_similarity(c, desc_vec)
                     if sim > max_sim: max_sim = sim
                 
-                # Configurable threshold from strategy or mission?
-                # Using Strategy default or Mission override
-                threshold = mission.min_stars / 1000.0 # Just a silly heuristic fallback? 
-                # Better: Use constant or strategy param
-                threshold = 0.25  # Lowered to allow more repos through
-                
+                # Save to DB
                 f_id = await self.storage.save_finding(
                     finding.title, finding.url, finding.description, 
                     finding.stars, finding.language, desc_vec.tobytes()
                 )
                 
-                if f_id != -1:
-                    # Not duplicate
+                if f_id != -1:  # Not duplicate
                     if max_sim >= threshold:
-                        # High Signal -> INBOX
-                        # Trigger CloudBrain Analysis immediately for rich context
-                        summary, relevance = "Pending Analysis", max_sim
-                        try:
-                            # Analysis takes time/cost, hence the 'Research Agent' concept
-                            logger.info(f"⚡ Analyzing candidate: {finding.title}")
-                            summary, ai_score = await self.cloud_brain.analyze_repo(finding.readme_content)
-                            # Blending local similarity with AI relevance score
-                            final_score = (max_sim + ai_score) / 2
-                        except Exception as e:
-                            logger.error(f"Analysis failed: {e}")
-                            summary = "Analysis Failed"
+                        # High signal -> Analyze with AI (minimal usage)
+                        summary, relevance = "Auto-Accepted", max_sim
+                        
+                        # AI analizi sadece yüksek belirsizlik durumunda
+                        if 0.3 <= max_sim <= 0.5:  # Belirsiz alan
+                            try:
+                                logger.info(f"🧠 AI analyzing uncertain case: {finding.title}")
+                                summary, ai_score = await self.cloud_brain.analyze_repo(finding.readme_content)
+                                final_score = (max_sim + ai_score) / 2
+                            except Exception as e:
+                                logger.error(f"AI analysis failed: {e}")
+                                final_score = max_sim
+                        else:
                             final_score = max_sim
-
+                        
                         await self.storage.update_finding_analysis(f_id, summary, final_score)
                         self.session_stats["interested"] += 1
-                        logger.info(f"Inbox +1: {finding.title} (Score: {final_score:.2f})")
+                        results_accepted += 1
+                        logger.info(f"✅ Inbox +1: {finding.title} (Score: {final_score:.2f})")
                     else:
-                        # Low signal - just store as filtered
-                         await self.storage.update_finding_analysis(f_id, "Filtered", max_sim)
+                        # Low signal - filtered
+                        await self.storage.update_finding_analysis(f_id, "Filtered", max_sim)
+                        results_rejected += 1
 
         finally:
+            # Log tactic performance
+            await self.storage.log_tactic_performance(
+                mission_name=mission.name,
+                tactic_name=tactic.name,
+                query_used=query_used,
+                results_found=results_found,
+                results_accepted=results_accepted,
+                results_rejected=results_rejected
+            )
+            
+            # Update tactic weight based on success
+            if results_found > 0:
+                success_rate = results_accepted / results_found
+                self.tactic_engine.update_tactic_weight(tactic.name, success_rate)
+            
             await hunter.close()
 
     async def reflect_and_optimize(self, mission):
-        """Analyze performance and update strategy."""
+        """
+        Analyze performance and autonomously optimize.
+        AI kullanımı minimal - sadece kritik durumlarda.
+        """
+        self._cycle_count += 1
         scanned = self.session_stats["scanned"]
         interested = self.session_stats["interested"]
         
         if scanned > 0:
             yield_rate = interested / scanned
-            logger.info(f"Session Yield: {yield_rate:.2%} ({interested}/{scanned})")
+            logger.info(f"📈 Session Yield: {yield_rate:.2%} ({interested}/{scanned})")
             
-            # Analytics Report
-            analytics_report = await self.analytics.generate_report()
-            user_acceptance = analytics_report["yield_rates"].get("user_acceptance_rate", 1.0)
+            # Son 10 döngünün performansını al
+            recent_perf = await self.storage.get_recent_tactic_performance(mission.name, limit=10)
             
-            # Optimization Triggers:
-            # 1. Low Session Yield (< 5%)
-            # 2. Low User Acceptance (< 30%) with sufficient data
-            # 3. Explicit 'Strategic Drift' detected by analytics (future)
-            
-            needs_optimization = False
-            if yield_rate < 0.05:
-                logger.info("Optimization Trigger: Low Yield Agent")
-                needs_optimization = True
-            elif user_acceptance < 0.3 and analytics_report["yield_rates"]["total_findings"] > 10:
-                logger.info("Optimization Trigger: Low User Acceptance")
-                needs_optimization = True
-
-            if needs_optimization:
-                logger.info("Requesting Strategy Optimization from CloudBrain...")
+            if len(recent_perf) >= 3:
+                # Son 3 döngünün ortalama başarısı
+                recent_success = sum(p['success_rate'] for p in recent_perf[:3]) / 3
                 
-                # Fetch recent feedback to give context
+                logger.info(f"📊 Recent 3 cycles avg success: {recent_success:.2%}")
+                
+                # OTONOM TAKTİK DEĞİŞİMİ (AI kullanmadan)
+                if recent_success < 0.1:  # %10'dan az başarı
+                    logger.info("⚡ AUTO-ROTATING TACTIC (low success rate)")
+                    self.tactic_engine.rotate_tactic(mission.name)
+                    
+                elif recent_success < 0.2:  # %20'dan az - eşiği düşür
+                    logger.info("📉 LOWERING THRESHOLD (moderate success)")
+                    await self.thresholds.adjust_threshold(mission.name, "similarity_threshold", "down")
+                
+                elif recent_success > 0.6:  # %60'dan fazla - eşiği yükselt
+                    logger.info("📈 RAISING THRESHOLD (high success - being selective)")
+                    await self.thresholds.adjust_threshold(mission.name, "similarity_threshold", "up")
+            
+            # AI OPTIMIZATION - sadece periyodik veya kritik durumlarda
+            should_use_ai = self._should_use_ai_optimization(mission.name, recent_perf)
+            
+            if should_use_ai:
+                logger.info("🧠 TRIGGERING AI OPTIMIZATION (periodic/critical)")
+                
+                analytics_report = await self.analytics.generate_report()
                 feedback = await self.storage.get_feedback_history()
                 
-                new_strat = await self.cloud_brain.generate_strategy_v2(
-                    mission.to_dict(), 
-                    self.session_stats, 
-                    feedback,
-                    analytics_report # Pass the rich report
-                )
-                
-                if new_strat:
-                    logger.info(f"Applying new strategy: {json.dumps(new_strat)}")
-                    with open(self.strategy_path, "w") as f:
-                        json.dump(new_strat, f, indent=4)
+                try:
+                    new_strat = await self.cloud_brain.generate_strategy_v2(
+                        mission.to_dict(), 
+                        self.session_stats, 
+                        feedback,
+                        analytics_report
+                    )
                     
-                    # Reset stats after optimization
-                    self.session_stats["scanned"] = 0
-                    self.session_stats["interested"] = 0
+                    if new_strat:
+                        logger.info(f"✨ Applying AI-generated strategy: {json.dumps(new_strat)}")
+                        with open(self.strategy_path, "w") as f:
+                            json.dump(new_strat, f, indent=4)
+                        
+                        # Reset stats
+                        self.session_stats["scanned"] = 0
+                        self.session_stats["interested"] = 0
+                except Exception as e:
+                    logger.error(f"AI optimization failed: {e}")
+
+    def _should_use_ai_optimization(self, mission_name: str, recent_perf: List[Dict]) -> bool:
+        """AI kullanılmalı mı?"""
+        # Her 50 döngüde bir
+        if self._cycle_count % self._ai_optimization_interval == 0:
+            return True
+        
+        # Kritik durum: sürekli düşük performans
+        if len(recent_perf) >= 5:
+            avg_last_5 = sum(p['success_rate'] for p in recent_perf[:5]) / 5
+            if avg_last_5 < 0.05:  # %5'ten az
+                logger.warning(f"⚠️ Critical low performance detected: {avg_last_5:.2%}")
+                return True
+        
+        return False
 
     def stop(self):
         self.running = False

@@ -10,6 +10,13 @@ from dataclasses import dataclass
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Import TacticEngine (optional, for when used with tactics)
+try:
+    from tuner.tactics import TacticEngine, SearchTactic
+except ImportError:
+    TacticEngine = None
+    SearchTactic = None
+
 @dataclass
 class RawFinding:
     title: str
@@ -133,25 +140,122 @@ class Hunter:
         
         # Build query - use fewer keywords for broader results
         query_parts = keywords[:3]  # Max 3 keywords
+        
+        # GitHub API only supports ONE language filter, use the first non-"Any" language
         for lang in languages:
             if lang.lower() != "any":
                 query_parts.append(f"language:{lang}")
+                break  # Only add FIRST language - multiple language: filters don't work!
+        
         query_parts.append(f"stars:>={min_stars}")
         query = " ".join(query_parts)
         
         logger.info(f"🔍 Mission Search Query: {query}")
         
-        # Always use page 1 to ensure we get results
-        page = 1
+        # Use random page (1-5) to get variety and discover new repos
+        page = random.randint(1, 5)
         items, headers = await self.search_raw(query, page=page)
         
-        logger.info(f"📦 Found {len(items)} items")
+        # Filter out archived repos and repos not updated in last 12 months
+        from datetime import datetime, timedelta
+        one_year_ago = datetime.now() - timedelta(days=365)
+        
+        active_items = []
+        for item in items:
+            # Skip archived repos
+            if item.get("archived", False):
+                logger.debug(f"⏭️ Skipping archived: {item['full_name']}")
+                continue
+            
+            # Skip repos not updated in last year
+            updated_at = item.get("updated_at", "")
+            if updated_at:
+                try:
+                    updated_date = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                    if updated_date.replace(tzinfo=None) < one_year_ago:
+                        logger.debug(f"⏭️ Skipping old repo (last update: {updated_at[:10]}): {item['full_name']}")
+                        continue
+                except:
+                    pass
+            
+            active_items.append(item)
+        
+        logger.info(f"📦 Found {len(items)} items, {len(active_items)} active (non-archived, recent)")
         
         findings = []
-        for item in items:
+        for item in active_items:
             findings.append(await self._process_item(item))
         
         return findings
+
+    async def search_with_tactic(
+        self, 
+        mission_goal: str, 
+        languages: List[str], 
+        tactic: 'SearchTactic',
+        tactic_engine: 'TacticEngine' = None
+    ) -> Tuple[List[RawFinding], str]:
+        """
+        Search GitHub using a specific tactic.
+        
+        Returns: (findings, query_used)
+        """
+        from datetime import datetime, timedelta
+        
+        # Build query using tactic engine or fallback
+        if tactic_engine:
+            query = tactic_engine.build_query(tactic, mission_goal, languages)
+            params = tactic_engine.get_search_params(tactic)
+        else:
+            # Fallback - build query manually
+            import random
+            query_parts = mission_goal.split()[:3]
+            for lang in languages:
+                if lang.lower() != "any":
+                    query_parts.append(f"language:{lang}")
+                    break
+            query_parts.append(f"stars:>={tactic.stars_min if tactic else 50}")
+            query = " ".join(query_parts)
+            params = {"page": random.randint(1, 5), "per_page": 10, "sort": "updated"}
+        
+        logger.info(f"🎯 Tactic: {tactic.name} | Query: {query}")
+        
+        # Execute search
+        items, headers = await self.search_raw(
+            query, 
+            page=params["page"], 
+            per_page=params["per_page"]
+        )
+        
+        # Filter archived/old repos
+        one_year_ago = datetime.now() - timedelta(days=365)
+        
+        active_items = []
+        for item in items:
+            # Skip archived
+            if item.get("archived", False):
+                continue
+            
+            # Skip old repos
+            updated_at = item.get("updated_at", "")
+            if updated_at:
+                try:
+                    updated_date = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                    if updated_date.replace(tzinfo=None) < one_year_ago:
+                        continue
+                except:
+                    pass
+            
+            active_items.append(item)
+        
+        logger.info(f"📦 Tactic {tactic.name}: {len(items)} total, {len(active_items)} active")
+        
+        findings = []
+        for item in active_items:
+            findings.append(await self._process_item(item))
+        
+        return findings, query
+
 
     async def _process_item(self, item: Dict[str, Any]) -> RawFinding:
         """Fetch readme and create RawFinding object."""

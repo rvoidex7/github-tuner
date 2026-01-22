@@ -124,6 +124,35 @@ class TunerStorage:
             )
         """)
         
+        # Tactic Performance tracking (ExperienceMemory)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS tactic_performance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mission_name TEXT NOT NULL,
+                tactic_name TEXT NOT NULL,
+                query_used TEXT,
+                results_found INTEGER DEFAULT 0,
+                results_accepted INTEGER DEFAULT 0,
+                results_rejected INTEGER DEFAULT 0,
+                success_rate REAL DEFAULT 0.0,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tactic_perf_mission ON tactic_performance (mission_name, timestamp DESC)")
+        
+        # Learned Rules (auto-detected patterns)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS learned_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_type TEXT NOT NULL,
+                rule_value TEXT NOT NULL,
+                mission_name TEXT,
+                confidence REAL DEFAULT 0.5,
+                source TEXT DEFAULT 'auto_detected',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
         await db.commit()
 
     def _get_conn_ctx(self):
@@ -224,6 +253,119 @@ class TunerStorage:
                 JOIN findings f ON fl.finding_id = f.id
                 ORDER BY fl.timestamp ASC
             """) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    # ============== ExperienceMemory Methods ==============
+    
+    async def log_tactic_performance(
+        self, 
+        mission_name: str, 
+        tactic_name: str, 
+        query_used: str,
+        results_found: int,
+        results_accepted: int,
+        results_rejected: int
+    ):
+        """Log performance of a tactic for a specific mission."""
+        success_rate = results_accepted / max(1, results_found)
+        
+        async with self._get_conn_ctx() as db:
+            await db.execute("""
+                INSERT INTO tactic_performance 
+                (mission_name, tactic_name, query_used, results_found, 
+                 results_accepted, results_rejected, success_rate)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (mission_name, tactic_name, query_used, results_found, 
+                  results_accepted, results_rejected, success_rate))
+            await db.commit()
+    
+    async def get_recent_tactic_performance(
+        self, 
+        mission_name: str, 
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Get recent performance data for a mission."""
+        async with self._get_conn_ctx() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM tactic_performance 
+                WHERE mission_name = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (mission_name, limit)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+    
+    async def get_tactic_success_rates(
+        self, 
+        mission_name: str = None
+    ) -> Dict[str, float]:
+        """Get average success rate per tactic (optionally filtered by mission)."""
+        async with self._get_conn_ctx() as db:
+            if mission_name:
+                query = """
+                    SELECT tactic_name, AVG(success_rate) as avg_rate
+                    FROM tactic_performance 
+                    WHERE mission_name = ?
+                    GROUP BY tactic_name
+                """
+                params = (mission_name,)
+            else:
+                query = """
+                    SELECT tactic_name, AVG(success_rate) as avg_rate
+                    FROM tactic_performance 
+                    GROUP BY tactic_name
+                """
+                params = ()
+            
+            async with db.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+                return {row[0]: row[1] for row in rows}
+    
+    async def save_learned_rule(
+        self, 
+        rule_type: str, 
+        rule_value: str, 
+        mission_name: str = None,
+        confidence: float = 0.5,
+        source: str = "auto_detected"
+    ):
+        """Save a learned rule/pattern."""
+        async with self._get_conn_ctx() as db:
+            await db.execute("""
+                INSERT INTO learned_rules 
+                (rule_type, rule_value, mission_name, confidence, source)
+                VALUES (?, ?, ?, ?, ?)
+            """, (rule_type, rule_value, mission_name, confidence, source))
+            await db.commit()
+    
+    async def get_learned_rules(
+        self, 
+        mission_name: str = None, 
+        rule_type: str = None
+    ) -> List[Dict[str, Any]]:
+        """Get learned rules, optionally filtered."""
+        async with self._get_conn_ctx() as db:
+            db.row_factory = aiosqlite.Row
+            
+            conditions = []
+            params = []
+            
+            if mission_name:
+                conditions.append("(mission_name = ? OR mission_name IS NULL)")
+                params.append(mission_name)
+            if rule_type:
+                conditions.append("rule_type = ?")
+                params.append(rule_type)
+            
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+            
+            async with db.execute(f"""
+                SELECT * FROM learned_rules 
+                WHERE {where_clause}
+                ORDER BY confidence DESC
+            """, params) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
 

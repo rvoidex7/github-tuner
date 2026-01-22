@@ -1,12 +1,12 @@
 {
     "keywords": [
-        "Python",
+        "TypeScript",
         "framework"
     ],
     "languages": [
-        "Python"
+        "TypeScript"
     ],
-    "min_stars": 90,
+    "min_stars": 40,
     "exclude_patterns": [
         "tutorial"
     ],
