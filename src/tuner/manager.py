@@ -11,6 +11,8 @@ from tuner.storage import TunerStorage
 from tuner.mission import MissionControl
 from tuner.analytics import AnalyticsEngine
 from tuner.tactics import TacticEngine
+from tuner.ai_evolver import SafeAITacticEvolver
+from tuner.mission_initializer import MissionInitializer
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +83,11 @@ class AutonomousManager:
         self.tactic_engine = TacticEngine(self.storage)
         self.thresholds = AdaptiveThresholds(self.storage)
         
+        # New Autonomous Components
+        self.ai_evolver = SafeAITacticEvolver(self.storage, self.cloud_brain)
+        self.mission_initializer = None # Init in start() or later because it needs hunter
+
+        
         # Runtime State
         self.running = False
         self.session_stats = {
@@ -99,8 +106,20 @@ class AutonomousManager:
         
         await self.storage.initialize()
         
+        # NEW: Load global tactic knowledge
+        await self.tactic_engine.load_global_knowledge()
+        logger.info("🧠 Loaded global tactic knowledge for hybrid learning")
+        
+        # Init components needing Hunter
+        if not self.mission_initializer:
+            temp_hunter = Hunter(self.strategy_path)
+            self.mission_initializer = MissionInitializer(self.mission_control, temp_hunter, self.cloud_brain)
+            
         try:
             while self.running:
+                # 0. Initialize New Missions (AI Analysis)
+                await self.mission_initializer.initialize_pending_missions()
+            
                 # 1. Load Context & Cycle Mission
                 self.mission_control.load_missions() # Refresh from file potentially
                 mission = self.mission_control.next_mission()
@@ -136,8 +155,8 @@ class AutonomousManager:
         # Load tactic performance data
         perf_data = await self.storage.get_tactic_success_rates(mission.name)
         
-        # Select tactic (weighted random based on performance)
-        tactic = self.tactic_engine.select_tactic(mission.name, perf_data)
+        # Select tactic (weighted random based on performance - HYBRID LEARNING)
+        tactic = await self.tactic_engine.select_tactic(mission.name, perf_data)
         
         # Dinamik eşik al
         threshold = await self.thresholds.get_threshold(mission.name, "similarity_threshold")
@@ -150,12 +169,18 @@ class AutonomousManager:
         query_used = ""
         
         try:
+            # Extract AI keywords for repo-based search
+            ai_keywords = None
+            if mission.ai_strategy and "keywords" in mission.ai_strategy:
+                ai_keywords = mission.ai_strategy["keywords"]
+                
             # Search with tactic
             findings, query_used = await hunter.search_with_tactic(
                 mission_goal=mission.goal,
                 languages=mission.languages,
                 tactic=tactic,
-                tactic_engine=self.tactic_engine
+                tactic_engine=self.tactic_engine,
+                ai_keywords=ai_keywords
             )
             
             results_found = len(findings)
@@ -279,6 +304,12 @@ class AutonomousManager:
                 logger.info("🧠 TRIGGERING AI OPTIMIZATION (periodic/critical)")
                 
                 analytics_report = await self.analytics.generate_report()
+                
+                # 1. AI Tactic Evolution (Modify tactics.json)
+                if self._cycle_count % 100 == 0:  # Every 100 cycles try to evolve tactics
+                    await self.ai_evolver.propose_and_apply_evolution(analytics_report)
+                
+                # 2. Strategy Optimization
                 feedback = await self.storage.get_feedback_history()
                 
                 try:

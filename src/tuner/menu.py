@@ -206,14 +206,25 @@ class InteractiveMenu:
             table = Table(title=f"{len(missions)} Active Missions", box=box.ROUNDED)
             table.add_column("#", style="dim")
             table.add_column("Name", style="cyan")
-            table.add_column("Keywords", style="white")
+            table.add_column("Seed Repos", style="white")
             table.add_column("Languages", style="green")
-            table.add_column("Min ⭐", style="yellow")
+            table.add_column("Constraints", style="yellow")
             
             for i, m in enumerate(missions, 1):
-                langs = ", ".join(m.get("languages", []))[:20]
-                goal = m.get("goal", "")[:30] + ("..." if len(m.get("goal", "")) > 30 else "")
-                table.add_row(str(i), m["name"], goal, langs, str(m.get("min_stars", 50)))
+                langs = ", ".join(m.get("languages", []))[:15]
+                # Show seed repos instead of raw query
+                seed_preview = "No seeds"
+                if m.get("seed_repos"):
+                    seed_preview = ", ".join([r.split("/")[-1] for r in m["seed_repos"]])[:25]
+                elif m.get("goal"):
+                    seed_preview = f"Query: {m['goal'][:20]}"
+
+                constraints = []
+                if m.get("min_stars"): constraints.append(f"⭐>{m['min_stars']}")
+                if m.get("max_days_since_commit"): constraints.append(f"📅<{m['max_days_since_commit']}d")
+                constraint_str = ", ".join(constraints) if constraints else "None"
+                
+                table.add_row(str(i), m["name"], seed_preview, langs, constraint_str)
             
             self.console.print(table)
             
@@ -231,16 +242,32 @@ class InteractiveMenu:
 
     def add_mission(self, missions):
         self.console.print("\n[bold green]➕ Add New Mission[/bold green]")
-        name = Prompt.ask("Mission Name")
-        goal = Prompt.ask("Search Keywords", default="python automation cli")
+        name = Prompt.ask("Mission Name (e.g. 'Uncommon React Tools')")
+        
+        # New: Seed repositories
+        seed_input = Prompt.ask("Seed Repos (comma-sep owner/repo, optional)", default="")
+        seed_repos = [s.strip() for s in seed_input.split(",")] if seed_input.strip() else []
+        
+        # New: User notes
+        user_notes = Prompt.ask("Research Notes (Describe what you want)", default="Find interesting tools")
+        
+        # Fallback Keywords (AI will generate, but good to have)
+        goal = Prompt.ask("Keywords (Fallback)", default=name.lower())
+        
         languages = Prompt.ask("Languages (comma-separated)", default="Python")
-        min_stars = Prompt.ask("Minimum Stars", default="50")
+        
+        # Optional constraints
+        min_stars = Prompt.ask("Min Stars (0 for none)", default="0")
+        max_days = Prompt.ask("Max Days Since Commit (Empty for any)", default="")
         
         new_mission = {
             "name": name,
             "goal": goal,
             "languages": [l.strip() for l in languages.split(",")],
             "min_stars": int(min_stars),
+            "max_days_since_commit": int(max_days) if max_days.strip() else None,
+            "seed_repos": seed_repos,
+            "user_notes": user_notes,
             "context_path": None
         }
         missions.append(new_mission)
@@ -262,11 +289,31 @@ class InteractiveMenu:
                 self.console.print(f"\n[bold]Editing: {m['name']}[/bold]")
                 
                 m["name"] = Prompt.ask("Name", default=m["name"])
+                
+                # Edit Seed Repos
+                curr_seeds = ", ".join(m.get("seed_repos", []) or [])
+                new_seeds = Prompt.ask("Seed Repos", default=curr_seeds)
+                m["seed_repos"] = [s.strip() for s in new_seeds.split(",")] if new_seeds.strip() else []
+                
+                # Edit Notes
+                m["user_notes"] = Prompt.ask("Notes", default=m.get("user_notes", ""))
+                
                 m["goal"] = Prompt.ask("Keywords", default=m["goal"])
+                
                 langs = ", ".join(m.get("languages", []))
                 new_langs = Prompt.ask("Languages", default=langs)
                 m["languages"] = [l.strip() for l in new_langs.split(",")]
-                m["min_stars"] = int(Prompt.ask("Min Stars", default=str(m.get("min_stars", 50))))
+                
+                m["min_stars"] = int(Prompt.ask("Min Stars", default=str(m.get("min_stars", 0))))
+                
+                curr_days = str(m.get("max_days_since_commit") or "")
+                new_days = Prompt.ask("Max Days Inactive", default=curr_days)
+                m["max_days_since_commit"] = int(new_days) if new_days.strip() else None
+                
+                # Reset init flag if significantly changed
+                if Confirm.ask("Reset AI Strategy for this mission?"):
+                    m["initialized"] = False
+                    m["ai_strategy"] = None
                 
                 self.save_missions(missions)
                 self.console.print("[green]✅ Mission updated![/green]")

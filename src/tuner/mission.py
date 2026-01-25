@@ -1,15 +1,24 @@
 import json
 import os
-from dataclasses import dataclass, asdict
-from typing import List, Optional
+from dataclasses import dataclass, asdict, field
+from typing import List, Optional, Dict, Any, Union
 
 @dataclass
 class Mission:
     name: str  # e.g., "Python AI Research"
     goal: str  # e.g., "Find autonomous agent libraries"
     languages: List[str]
-    min_stars: int
-    context_path: Optional[str] = None # For Project Match mode
+    min_stars: Optional[int] = 0  # Optional (default 0)
+    max_days_since_commit: Optional[int] = None  # NEW: Activity criteria (e.g., 30 days)
+    context_path: Optional[str] = None  # For Project Match mode
+    
+    # NEW: Enhanced mission features
+    seed_repos: Optional[List[str]] = None  # Example repos for similarity search
+    starred_repos: Optional[Union[str, List[str]]] = None  # "all" or specific list
+    user_notes: Optional[str] = None  # User's research intent and context
+    ai_strategy: Optional[Dict[str, Any]] = None  # AI-generated strategy on first run
+    learned_tactics: Optional[Dict[str, float]] = None  # Mission-specific tactic weights
+    initialized: bool = False  # Has AI analyzed this mission yet?
 
     def to_dict(self):
         return asdict(self)

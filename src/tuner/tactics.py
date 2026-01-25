@@ -7,6 +7,8 @@ taktikler sunar. Program kendi kendine taktik değiştirir.
 
 import random
 import logging
+import json
+import os
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, asdict
@@ -97,8 +99,63 @@ class TacticEngine:
     
     def __init__(self, storage=None):
         self.storage = storage
-        self.tactics = {t.name: t for t in DEFAULT_TACTICS}
+        self.tactics = self._load_tactics()
         self._mission_tactic_history: Dict[str, List[str]] = {}
+        self._mission_sample_counts: Dict[str, Dict[str, int]] = {}  # NEW: Track samples per mission/tactic
+        self._global_knowledge: Dict[str, float] = {}  # NEW: Global tactic performance
+        
+    def _load_tactics(self) -> Dict[str, SearchTactic]:
+        """Load tactics from tactics.json (AI-modifiable) or fallback to defaults."""
+        tactics_file = "tactics.json"
+        
+        # Try loading from JSON
+        if os.path.exists(tactics_file):
+            try:
+                with open(tactics_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    tactics_list = []
+                    for t_data in data.get("tactics", []):
+                        # Convert page_range from list to tuple
+                        if "page_range" in t_data and isinstance(t_data["page_range"], list):
+                            t_data["page_range"] = tuple(t_data["page_range"])
+                        tactics_list.append(SearchTactic(**t_data))
+                    
+                    logger.info(f"✅ Loaded {len(tactics_list)} tactics from {tactics_file}")
+                    return {t.name: t for t in tactics_list}
+            except Exception as e:
+                logger.error(f"❌ Failed to load {tactics_file}: {e}. Using defaults.")
+        
+        # Fallback to hardcoded defaults
+        logger.info("Using default hardcoded tactics")
+        return {t.name: t for t in DEFAULT_TACTICS}
+    
+    async def load_global_knowledge(self):
+        """Load global tactic performance from database (all missions combined)."""
+        if self.storage:
+            try:
+                self._global_knowledge = await self.storage.get_tactic_success_rates(mission_name=None)
+                logger.info(f"🌍 Loaded global knowledge: {self._global_knowledge}")
+            except Exception as e:
+                logger.error(f"Failed to load global knowledge: {e}")
+    
+    async def load_mission_sample_counts(self, mission_name: str):
+        """Load how many samples we have per tactic for this mission."""
+        if not self.storage:
+            return
+        
+        try:
+            # Get all performance records for this mission
+            records = await self.storage.get_recent_tactic_performance(mission_name, limit=1000)
+            
+            counts = {}
+            for record in records:
+                tactic_name = record.get("tactic_name")
+                counts[tactic_name] = counts.get(tactic_name, 0) + 1
+            
+            self._mission_sample_counts[mission_name] = counts
+            logger.debug(f"Sample counts for {mission_name}: {counts}")
+        except Exception as e:
+            logger.error(f"Failed to load sample counts: {e}")
     
     def _resolve_date_placeholder(self, date_filter: Optional[str]) -> Optional[str]:
         """Tarih placeholder'larını çöz."""
@@ -119,44 +176,59 @@ class TacticEngine:
         
         return date_filter
     
-    def select_tactic(self, mission_name: str, performance_data: Dict[str, float] = None) -> SearchTactic:
+    async def select_tactic(self, mission_name: str, performance_data: Dict[str, float] = None) -> SearchTactic:
         """
-        Mission için en uygun taktiği seç.
+        Select best tactic using HYBRID approach:
+        1. If mission has <5 samples, use GLOBAL knowledge
+        2. Otherwise, blend mission-specific (80%) + global (20%)
         
-        Weighted random selection kullanır - daha yüksek performanslı
-        taktikler daha sık seçilir.
+        Weighted random selection - higher performing tactics chosen more often.
         """
-        # Performans verisine göre ağırlıkları güncelle
+        # Load sample counts if not loaded
+        if mission_name not in self._mission_sample_counts:
+            await self.load_mission_sample_counts(mission_name)
+        
         tactics_list = list(self.tactics.values())
         weights = []
         
         for tactic in tactics_list:
             base_weight = tactic.weight
             
-            # Performans verisi varsa, ağırlığı ayarla
-            if performance_data and tactic.name in performance_data:
-                success_rate = performance_data[tactic.name]
-                # Başarı oranı düşükse ağırlığı azalt (ama sıfırlama)
-                adjusted_weight = base_weight * (0.3 + 0.7 * success_rate)
-            else:
-                adjusted_weight = base_weight
+            # Check sample count for this mission/tactic
+            mission_samples = self._mission_sample_counts.get(mission_name, {}).get(tactic.name, 0)
             
-            # Son kullanılan taktiği biraz cezalandır (çeşitlilik için)
+            if mission_samples < 5:
+                # NEW MISSION - Use global knowledge
+                perf_score = self._global_knowledge.get(tactic.name, 0.5)  # Default 50%
+                if mission_samples == 0:
+                    logger.info(f"🌍 Using global knowledge for {tactic.name} (no mission data)")
+            else:
+                # EXPERIENCED MISSION - Blend mission + global
+                mission_score = performance_data.get(tactic.name, 0.5) if performance_data else 0.5
+                global_score = self._global_knowledge.get(tactic.name, 0.5)
+                
+                # 80% mission-specific, 20% global
+                perf_score = 0.8 * mission_score + 0.2 * global_score
+            
+            # Adjust weight based on performance
+            adjusted_weight = base_weight * (0.3 + 0.7 * perf_score)
+            
+            # Penalize recently used tactics (diversity)
             history = self._mission_tactic_history.get(mission_name, [])
             if history and history[-1] == tactic.name:
                 adjusted_weight *= 0.5
             
-            weights.append(max(0.1, adjusted_weight))  # Minimum 0.1 ağırlık
+            weights.append(max(0.1, adjusted_weight))  # Minimum 0.1 weight
         
         # Weighted random selection
         selected = random.choices(tactics_list, weights=weights, k=1)[0]
         
-        # History güncelle
+        # Update history
         if mission_name not in self._mission_tactic_history:
             self._mission_tactic_history[mission_name] = []
         self._mission_tactic_history[mission_name].append(selected.name)
         
-        # Son 10 taktiği tut sadece
+        # Keep only last 10
         self._mission_tactic_history[mission_name] = self._mission_tactic_history[mission_name][-10:]
         
         logger.info(f"🎯 Selected tactic: {selected.name} for mission: {mission_name}")
@@ -184,9 +256,11 @@ class TacticEngine:
         logger.info(f"🔄 Force-rotated to tactic: {selected.name} for mission: {mission_name}")
         return selected
     
-    def build_query(self, tactic: SearchTactic, mission_goal: str, languages: List[str]) -> str:
+    
+    def build_query(self, tactic: SearchTactic, mission_goal: str, languages: List[str], ai_keywords: List[str] = None) -> str:
         """
         Build GitHub search query from tactic and mission info.
+        If ai_keywords provided, they are treated as high priority.
         """
         import re
         
@@ -209,8 +283,17 @@ class TacticEngine:
             "sdk", "client", "library"
         }
         
+        # Add AI keywords to priority set
+        if ai_keywords:
+            for k in ai_keywords:
+                priority_keywords.add(k.lower())
+        
         # Keywords çıkar
         goal_words = [w.lower().strip(",.()\"'") for w in mission_goal.split()]
+        
+        # Add AI keywords to goal words to ensure they are processed
+        if ai_keywords:
+            goal_words.extend([k.lower() for k in ai_keywords])
         
         found_priority = []
         other_keywords = []

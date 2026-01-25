@@ -193,7 +193,8 @@ class Hunter:
         mission_goal: str, 
         languages: List[str], 
         tactic: 'SearchTactic',
-        tactic_engine: 'TacticEngine' = None
+        tactic_engine: 'TacticEngine' = None,
+        ai_keywords: List[str] = None
     ) -> Tuple[List[RawFinding], str]:
         """
         Search GitHub using a specific tactic.
@@ -204,7 +205,7 @@ class Hunter:
         
         # Build query using tactic engine or fallback
         if tactic_engine:
-            query = tactic_engine.build_query(tactic, mission_goal, languages)
+            query = tactic_engine.build_query(tactic, mission_goal, languages, ai_keywords=ai_keywords)
             params = tactic_engine.get_search_params(tactic)
         else:
             # Fallback - build query manually
