@@ -18,6 +18,9 @@ class TunerStorage:
         if self.db_path != ":memory:":
              os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
              async with aiosqlite.connect(self.db_path) as db:
+                 # Enable WAL mode for concurrency
+                 await db.execute("PRAGMA journal_mode = WAL;")
+                 await db.execute("PRAGMA synchronous = NORMAL;")
                  await self._create_tables(db)
         else:
             # For memory, we create a persistent connection
@@ -150,6 +153,43 @@ class TunerStorage:
                 confidence REAL DEFAULT 0.5,
                 source TEXT DEFAULT 'auto_detected',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # AgentFS: Conversations (Sessions)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                target_repo TEXT,
+                model_config TEXT,
+                status TEXT DEFAULT 'active'
+            )
+        """)
+
+        # AgentFS: Turns (Interaction Steps)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT,
+                role TEXT,
+                content TEXT,
+                tool_calls TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (conversation_id) REFERENCES conversations (id)
+            )
+        """)
+
+        # AgentFS: Knowledge Graph (File Analysis)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS knowledge_graph (
+                file_path TEXT PRIMARY KEY,
+                ast_fingerprint TEXT,
+                last_analyzed TIMESTAMP,
+                summary TEXT,
+                embedding BLOB
             )
         """)
         
