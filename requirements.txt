@@ -10,3 +10,8 @@ aiosqlite
 scikit-learn
 feedparser
 python-dotenv>=1.0.0
+litellm
+textual
+psutil
+playwright
+fake-useragent

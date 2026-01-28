@@ -398,6 +398,21 @@ def optimize():
     """Optimize search strategy based on feedback."""
     asyncio.run(_optimize_strategy())
 
+@app.command()
+def engineer(
+    mission: str = typer.Argument(..., help="The goal of the engineering mission"),
+):
+    """Launch the Autonomous Software Engineer TUI."""
+    from tuner.agent.core import EngineerAgent
+    from tuner.agent.ui import AgentDashboard
+
+    # Initialize Agent
+    agent = EngineerAgent(DB_PATH)
+
+    # Launch UI
+    app = AgentDashboard(agent, mission)
+    app.run()
+
 async def _optimize_strategy():
     storage = TunerStorage(DB_PATH)
     await storage.initialize()
