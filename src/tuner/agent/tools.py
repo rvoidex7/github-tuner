@@ -220,7 +220,7 @@ class AgentTools:
         return f"Title: {result.get('title')}\n\nContent:\n{result.get('content')}"
 
     async def read_rss(self, url: str) -> str:
-        entries = self.rss_reader.fetch_feed(url)
+        entries = await self.rss_reader.fetch_feed(url)
         if not entries:
             return "No entries found or error fetching feed."
 

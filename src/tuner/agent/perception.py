@@ -1,5 +1,5 @@
 import feedparser
-import requests
+import httpx
 from fake_useragent import UserAgent
 from playwright.async_api import async_playwright
 import asyncio
@@ -9,7 +9,7 @@ from typing import List, Dict, Any
 logger = logging.getLogger(__name__)
 
 class RSSReader:
-    def fetch_feed(self, url: str) -> List[Dict[str, Any]]:
+    async def fetch_feed(self, url: str) -> List[Dict[str, Any]]:
         ua = UserAgent()
         headers = {
             'User-Agent': ua.random,
@@ -18,10 +18,12 @@ class RSSReader:
         }
 
         try:
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers=headers, timeout=10.0)
+                response.raise_for_status()
+                content = response.content
 
-            feed = feedparser.parse(response.content)
+            feed = feedparser.parse(content)
 
             if feed.bozo:
                 logger.warning(f"Feed parse warning for {url}: {feed.bozo_exception}")
