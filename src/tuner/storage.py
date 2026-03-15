@@ -48,6 +48,11 @@ class TunerStorage:
         except Exception as e:
             print(f"Error resetting DB: {e}")
 
+    async def _column_exists(self, db, table_name: str, column_name: str) -> bool:
+        """Check if a column exists in a table."""
+        async with db.execute(f"PRAGMA table_info({table_name})") as cursor:
+            rows = await cursor.fetchall()
+            return any(row[1] == column_name for row in rows)
 
     async def _create_tables(self, db):
         # Findings table
@@ -90,12 +95,10 @@ class TunerStorage:
         """)
         
         # Check if columns exist (migration hack for dev)
-        try:
-             await db.execute("ALTER TABLE feedback_logs ADD COLUMN category TEXT")
-        except: pass
-        try:
-             await db.execute("ALTER TABLE feedback_logs ADD COLUMN reason TEXT")
-        except: pass
+        if not await self._column_exists(db, "feedback_logs", "category"):
+            await db.execute("ALTER TABLE feedback_logs ADD COLUMN category TEXT")
+        if not await self._column_exists(db, "feedback_logs", "reason"):
+            await db.execute("ALTER TABLE feedback_logs ADD COLUMN reason TEXT")
 
         # Tasks Queue table
         await db.execute("""
