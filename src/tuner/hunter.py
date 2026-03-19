@@ -91,11 +91,11 @@ class Hunter:
 
         items, _ = await self.search_raw(query, page=page)
 
-        findings = []
-        for item in items:
-            findings.append(await self._process_item(item))
+        if not items:
+            return []
 
-        return findings
+        # Process all items concurrently
+        return await asyncio.gather(*(self._process_item(item) for item in items))
 
     async def search_for_mission(self, mission_goal: str, languages: List[str], min_stars: int = 50) -> List[RawFinding]:
         """
@@ -182,11 +182,11 @@ class Hunter:
         
         logger.info(f"📦 Found {len(items)} items, {len(active_items)} active (non-archived, recent)")
         
-        findings = []
-        for item in active_items:
-            findings.append(await self._process_item(item))
-        
-        return findings
+        if not active_items:
+            return []
+
+        # Process all active items concurrently
+        return await asyncio.gather(*(self._process_item(item) for item in active_items))
 
     async def search_with_tactic(
         self, 
@@ -251,9 +251,11 @@ class Hunter:
         
         logger.info(f"📦 Tactic {tactic.name}: {len(items)} total, {len(active_items)} active")
         
-        findings = []
-        for item in active_items:
-            findings.append(await self._process_item(item))
+        if not active_items:
+            return [], query
+
+        # Process all active items concurrently
+        findings = await asyncio.gather(*(self._process_item(item) for item in active_items))
         
         return findings, query
 
