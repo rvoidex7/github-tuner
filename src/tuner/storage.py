@@ -89,14 +89,6 @@ class TunerStorage:
             )
         """)
         
-        # Check if columns exist (migration hack for dev)
-        try:
-             await db.execute("ALTER TABLE feedback_logs ADD COLUMN category TEXT")
-        except: pass
-        try:
-             await db.execute("ALTER TABLE feedback_logs ADD COLUMN reason TEXT")
-        except: pass
-
         # Tasks Queue table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
