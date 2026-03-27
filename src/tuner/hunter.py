@@ -273,18 +273,40 @@ class Hunter:
         )
 
     async def _fetch_readme(self, owner: str, repo: str, branch: str) -> str:
-        """Fetch README raw content."""
+        """Fetch README raw content concurrently."""
         # Try common README filenames
         filenames = ["README.md", "readme.md", "README.rst", "README.txt"]
 
-        for fname in filenames:
+        async def fetch(fname: str) -> Optional[str]:
             url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{fname}"
             try:
                 resp = await self.client.get(url)
                 if resp.status_code == 200:
                     return resp.text
             except Exception:
-                continue
+                pass
+            return None
+
+        # Create tasks for all filenames
+        tasks = [asyncio.create_task(fetch(fname)) for fname in filenames]
+
+        try:
+            # We want the first one that successfully returns a string
+            for completed_task in asyncio.as_completed(tasks):
+                content = await completed_task
+                if content:
+                    # Cancel other tasks since we found a result
+                    for t in tasks:
+                        if not t.done():
+                            t.cancel()
+                    return content
+        except Exception:
+            pass
+        finally:
+            # Ensure all tasks are cleaned up
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
 
         return ""
 
