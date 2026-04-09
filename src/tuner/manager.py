@@ -121,7 +121,7 @@ class AutonomousManager:
                 await self.mission_initializer.initialize_pending_missions()
             
                 # 1. Load Context & Cycle Mission
-                self.mission_control.load_missions() # Refresh from file potentially
+                await asyncio.to_thread(self.mission_control.load_missions) # Refresh from file potentially
                 mission = self.mission_control.next_mission()
                 
                 if not mission:
@@ -322,8 +322,12 @@ class AutonomousManager:
                     
                     if new_strat:
                         logger.info(f"✨ Applying AI-generated strategy: {json.dumps(new_strat)}")
-                        with open(self.strategy_path, "w") as f:
-                            json.dump(new_strat, f, indent=4)
+
+                        def _save_strategy():
+                            with open(self.strategy_path, "w") as f:
+                                json.dump(new_strat, f, indent=4)
+
+                        await asyncio.to_thread(_save_strategy)
                         
                         # Reset stats
                         self.session_stats["scanned"] = 0
