@@ -117,38 +117,43 @@ class AgentTools:
         ]
 
     async def read_file(self, path: str) -> str:
-        if ".." in path or path.startswith("/"):
-            return "Error: Path must be relative and cannot contain '..'"
+        try:
+            path = os.path.abspath(path)
+            if not path.startswith(os.path.abspath(".")):
+                return "Error: Access denied (outside workspace)"
 
-        def _read_sync():
-            if not os.path.exists(path):
-                return f"Error: File {path} not found."
+            def _read_sync():
+                if not os.path.exists(path):
+                    return f"Error: File {path} not found."
 
-            # Heuristic Check
-            if self.guard:
+                # Heuristic Check
+                if self.guard:
+                    try:
+                        size = os.path.getsize(path)
+                        if not self.guard.should_analyze_file(path, size):
+                            return f"Error: File blocked by Heuristic Guard (too large or invalid extension). Path: {path}, Size: {size} bytes."
+                    except OSError:
+                        pass
+
                 try:
-                    size = os.path.getsize(path)
-                    if not self.guard.should_analyze_file(path, size):
-                        return f"Error: File blocked by Heuristic Guard (too large or invalid extension). Path: {path}, Size: {size} bytes."
-                except OSError:
-                    pass
+                    with open(path, "r", encoding="utf-8") as f:
+                        return f.read()
+                except UnicodeDecodeError:
+                    return "Error: File is binary or not UTF-8."
+                except Exception as e:
+                    return f"Error reading file: {e}"
 
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    return f.read()
-            except UnicodeDecodeError:
-                return "Error: File is binary or not UTF-8."
-            except Exception as e:
-                return f"Error reading file: {e}"
-
-        return await asyncio.to_thread(_read_sync)
+            return await asyncio.to_thread(_read_sync)
+        except Exception as e:
+            return f"Error reading file: {str(e)}"
 
     async def write_file(self, path: str, content: str) -> str:
-        if ".." in path or path.startswith("/"):
-            return "Error: Path must be relative and cannot contain '..'"
+        try:
+            path = os.path.abspath(path)
+            if not path.startswith(os.path.abspath(".")):
+                return "Error: Access denied (outside workspace)"
 
-        def _write_sync():
-            try:
+            def _write_sync():
                 # Create backup
                 if os.path.exists(path):
                     shutil.copy2(path, f"{path}.bak")
@@ -159,10 +164,10 @@ class AgentTools:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(content)
                 return f"Success: Written to {path} (Backup created at {path}.bak)"
-            except Exception as e:
-                return f"Error writing file: {e}"
 
-        return await asyncio.to_thread(_write_sync)
+            return await asyncio.to_thread(_write_sync)
+        except Exception as e:
+            return f"Error writing file: {str(e)}"
 
     async def run_shell(self, command: str) -> str:
         allowed_commands = ["ls", "grep", "git status", "pytest", "cat", "find", "pwd", "git diff"]

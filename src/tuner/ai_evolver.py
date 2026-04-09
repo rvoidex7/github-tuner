@@ -11,6 +11,7 @@ import logging
 import shutil
 import glob
 import os
+import asyncio
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from dataclasses import asdict
@@ -49,7 +50,7 @@ class SafeAITacticEvolver:
             return False
             
         # 2. Safely apply
-        success = self.safely_apply_evolution(proposed_tactics)
+        success = await asyncio.to_thread(self.safely_apply_evolution, proposed_tactics)
         return success
 
     async def _generate_proposal(self, report: Dict) -> Optional[Dict]:
@@ -79,7 +80,7 @@ class SafeAITacticEvolver:
         - Optional fields: stars_min, stars_max, date_filter, page_range, keyword_strategy
         
         EXISTING TACTICS (for reference):
-        {open("tactics.json", "r", encoding="utf-8").read()}
+        {await asyncio.to_thread(lambda: open("tactics.json", "r", encoding="utf-8").read())}
         
         Return ONLY valid JSON.
         """

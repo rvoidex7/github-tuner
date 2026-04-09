@@ -35,11 +35,21 @@ class EngineerAgent:
         self.total_output_tokens = 0
         self.total_cost = 0.0
 
-        # Initialize
-        self.analyzer.index_project(".") # Index self for clone detection
+        # Initialization task
+        self._init_task = None
+
+    async def _initialize_analyzer(self):
+        """Offload indexing to avoid blocking start."""
+        await asyncio.to_thread(self.analyzer.index_project, ".")
 
     async def start_mission(self, mission_goal: str):
         """Start the autonomous engineering loop."""
+        # Ensure analyzer is indexed
+        if self._init_task is None:
+            self._init_task = asyncio.create_task(self._initialize_analyzer())
+
+        await self._init_task
+
         self.running = True
         self.session_id = await self.memory.create_session(
             target_repo=mission_goal,

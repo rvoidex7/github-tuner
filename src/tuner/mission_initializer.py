@@ -8,6 +8,7 @@ generate internal strategy and initial tactic weights.
 
 import logging
 import json
+import asyncio
 from typing import Dict, Any, List
 
 from tuner.mission import Mission, MissionControl
@@ -31,7 +32,7 @@ class MissionInitializer:
                 await self._initialize_mission(mission)
                 
         # Save changes
-        self.mission_control.save_missions()
+        await asyncio.to_thread(self.mission_control.save_missions)
         
     async def _initialize_mission(self, mission: Mission):
         """
